@@ -1,16 +1,7 @@
-const { contextBridge, ipcRenderer } = require('electron');
-
-contextBridge.exposeInMainWorld('electronAPI', {
-  isElectron: true,
-  platform: process.platform,
-  version: process.versions.electron
+const { contextBridge } = require('electron');
+const urlParams = new URLSearchParams(window.location.search);
+contextBridge.exposeInMainWorld('LK_MODE', {
+  role: urlParams.get('role') || 'main',
+  serverIp: urlParams.get('serverIp') || '',
+  serverPort: urlParams.get('serverPort') || '9876'
 });
-
-/* Only used by the setup wizard window */
-if (window.location.pathname.indexOf('/setup/') !== -1) {
-  contextBridge.exposeInMainWorld('setupAPI', {
-    complete: (config) => ipcRenderer.send('setup-complete', config),
-    scanServer: (ip, port) => ipcRenderer.send('setup-scan-server', ip, port),
-    onScanResult: (cb) => ipcRenderer.on('setup-scan-result', (e, res) => cb(res))
-  });
-}
