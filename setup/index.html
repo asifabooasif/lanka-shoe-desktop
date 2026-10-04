@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Lanka Shoe — First Time Setup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);
+    color: #fff; padding: 24px; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: #fff; color: #1a1533; border-radius: 20px;
+    padding: 36px; max-width: 620px; width: 100%;
+    box-shadow: 0 24px 60px rgba(0,0,0,.35);
+  }
+  .logo {
+    width: 64px; height: 64px; border-radius: 18px;
+    background: linear-gradient(135deg,#7c3aed,#ec4899);
+    display: grid; place-items: center; font-size: 30px;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 24px; margin-bottom: 6px; }
+  .sub { color: #666; font-size: 14px; margin-bottom: 28px; }
+  .options { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .option {
+    border: 2px solid #e5e7eb; border-radius: 14px; padding: 22px;
+    cursor: pointer; transition: all .15s; text-align: center;
+  }
+  .option:hover { border-color: #7c3aed; background: #faf5ff; }
+  .option.selected {
+    border-color: #7c3aed; background: #f5f0ff;
+    box-shadow: 0 0 0 4px rgba(124,58,237,.1);
+  }
+  .option .ico { font-size: 42px; margin-bottom: 10px; }
+  .option .name { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+  .option .desc { font-size: 12px; color: #666; line-height: 1.5; }
+  .form-grid { display: none; }
+  .form-grid.active { display: block; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 12px; font-weight: 600;
+    margin-bottom: 6px; color: #444;
+  }
+  .field input {
+    width: 100%; padding: 11px 14px; border: 1.5px solid #ddd;
+    border-radius: 10px; font-size: 14px; font-family: inherit;
+  }
+  .field input:focus { outline: none; border-color: #7c3aed; }
+  .hint { font-size: 11px; color: #888; margin-top: 4px; }
+  .status {
+    padding: 12px 14px; border-radius: 10px; font-size: 13px;
+    margin-top: 10px; display: none;
+  }
+  .status.ok { background: #d1fae5; color: #065f46; display: block; }
+  .status.err { background: #fee2e2; color: #991b1b; display: block; }
+  .status.info { background: #dbeafe; color: #1e40af; display: block; }
+  .actions {
+    display: flex; justify-content: space-between; gap: 12px; margin-top: 24px;
+  }
+  .btn {
+    padding: 13px 24px; border-radius: 10px; border: 0;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    font-family: inherit; transition: all .15s;
+  }
+  .btn.primary {
+    background: linear-gradient(135deg,#7c3aed,#ec4899);
+    color: #fff; flex: 1;
+  }
+  .btn.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.secondary { background: #f3f4f6; color: #444; }
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(124,58,237,.25);
+  }
+  .foot { font-size: 11px; color: #999; text-align: center; margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">👟</div>
+  <h1>Welcome to Lanka Shoe</h1>
+  <div class="sub">Choose how this PC will work on your network</div>
+
+  <div class="options">
+    <div class="option" data-mode="server">
+      <div class="ico">🗄️</div>
+      <div class="name">Server PC</div>
+      <div class="desc">Holds the main data file.<br>Other PCs connect to this one.</div>
+    </div>
+    <div class="option" data-mode="client">
+      <div class="ico">💻</div>
+      <div class="name">Client PC</div>
+      <div class="desc">Connects to a server PC<br>over WiFi or LAN cable.</div>
+    </div>
+  </div>
+
+  <!-- SERVER -->
+  <div class="form-grid" id="form-server">
+    <div class="field">
+      <label>Data Folder</label>
+      <input id="dataDir" value="C:\LankaShoe" placeholder="C:\LankaShoe">
+      <div class="hint">Where your data.json file will be stored</div>
+    </div>
+    <div class="field">
+      <label>Server Port</label>
+      <input id="serverPort" type="number" value="3000">
+      <div class="hint">Leave 3000 unless it conflicts</div>
+    </div>
+    <div class="field">
+      <label>Optional PIN</label>
+      <input id="serverPin" type="text" maxlength="12" placeholder="Leave empty for no PIN">
+      <div class="hint">Client PCs must enter this to connect</div>
+    </div>
+  </div>
+
+  <!-- CLIENT -->
+  <div class="form-grid" id="form-client">
+    <div class="field">
+      <label>Server IP Address</label>
+      <input id="serverIP" placeholder="e.g. 192.168.1.100">
+      <div class="hint">Shown on the server PC when it starts</div>
+    </div>
+    <div class="field">
+      <label>Server Port</label>
+      <input id="clientPort" type="number" value="3000">
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="btn secondary" id="scanBtn" type="button">🔍 Test Connection</button>
+    </div>
+    <div class="status" id="status-client"></div>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary" id="finishBtn" disabled>Continue →</button>
+  </div>
+
+  <div class="foot">You can change these later from the app menu.</div>
+</div>
+
+<script>
+'use strict';
+let selectedMode = null;
+
+document.querySelectorAll('.option').forEach(el => {
+  el.onclick = () => {
+    document.querySelectorAll('.option').forEach(x => x.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedMode = el.dataset.mode;
+    document.getElementById('form-server').classList.toggle('active', selectedMode === 'server');
+    document.getElementById('form-client').classList.toggle('active', selectedMode === 'client');
+    document.getElementById('finishBtn').disabled = false;
+    document.getElementById('finishBtn').textContent =
+      selectedMode === 'server' ? 'Start as Server →' : 'Connect to Server →';
+  };
+});
+
+document.getElementById('scanBtn').onclick = () => {
+  const ip = document.getElementById('serverIP').value.trim();
+  const port = parseInt(document.getElementById('clientPort').value) || 3000;
+  const st = document.getElementById('status-client');
+  if (!ip) {
+    st.className = 'status err';
+    st.textContent = 'Enter a server IP';
+    return;
+  }
+  st.className = 'status info';
+  st.textContent = 'Testing connection to ' + ip + ':' + port + '…';
+  window.setupAPI.scanServer(ip, port);
+};
+
+window.setupAPI.onScanResult(res => {
+  const st = document.getElementById('status-client');
+  if (res.ok) {
+    st.className = 'status ok';
+    st.innerHTML =
+      '✅ <strong>Connected!</strong> Server: ' +
+      (res.info.hostname || 'unknown') +
+      ' • Version ' + (res.info.version || '?') +
+      ' • ' + (res.info.hasData ? 'Has data ✓' : 'Empty (first use)');
+  } else {
+    st.className = 'status err';
+    st.textContent = '❌ Cannot connect: ' + res.error;
+  }
+});
+
+document.getElementById('finishBtn').onclick = () => {
+  if (!selectedMode) return;
+  const cfg = { mode: selectedMode };
+  if (selectedMode === 'server') {
+    cfg.dataDir = document.getElementById('dataDir').value.trim() || 'C:\\LankaShoe';
+    cfg.serverPort = parseInt(document.getElementById('serverPort').value) || 3000;
+    cfg.serverPin = document.getElementById('serverPin').value.trim();
+  } else {
+    cfg.serverIP = document.getElementById('serverIP').value.trim();
+    cfg.serverPort = parseInt(document.getElementById('clientPort').value) || 3000;
+    if (!cfg.serverIP) {
+      alert('Please enter the server IP address');
+      return;
+    }
+  }
+  window.setupAPI.complete(cfg);
+};
+</script>
+</body>
+</html>
