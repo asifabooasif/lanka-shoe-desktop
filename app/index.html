@@ -21206,5 +21206,95 @@ if (document.readyState === 'loading') {
     'color:#f59e0b;font-weight:bold;font-size:12px');
 })();
 </script>
+  <script>
+'use strict';
+(function emergencyPatch() {
+  if (window._emergencyPatch) return;
+  window._emergencyPatch = true;
+  const NN = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  const AR = v => Array.isArray(v) ? v : [];
+
+  // A) Reassign-safe DB setter
+  window.__setDb = function (newDb) {
+    try { Object.assign(window.db, newDb); } catch (e) { window.db = newDb; }
+    try { if (typeof db !== 'undefined') for (const k of Object.keys(newDb)) db[k] = newDb[k]; } catch (e) {}
+  };
+
+  // B) Clean bankBalance (no double-count)
+  window.bankBalance = function (id) {
+    const acc = AR(window.db.bankAccounts).find(b => b.id === id);
+    if (!acc) return 0;
+    let bal = NN(acc.openingBalance);
+    AR(window.db.receipts)
+      .filter(r => r.bankAccountId === id && r.method !== 'Cheque')
+      .forEach(r => { bal += NN(r.amount); });
+    AR(window.db.bankTransactions)
+      .filter(t => t.bankAccountId === id)
+      .forEach(t => {
+        if (t.status === 'reversed' || t.status === 'rejected' || t.status === 'pending') return;
+        if (t.type === 'deposit' && t.receiptId) return; // skip legacy dupe
+        if (t.type === 'credit' || t.type === 'deposit' || t.type === 'transfer_in') bal += NN(t.amount);
+        else if (['debit','withdrawal','transfer_out','bank_fee','cheque_issued'].includes(t.type)) bal -= NN(t.amount);
+      });
+    return bal;
+  };
+
+  // C) Stop saveReceipt from creating duplicate deposits
+  const _sr = window.saveReceipt;
+  if (typeof _sr === 'function') {
+    window.saveReceipt = function () {
+      const r = _sr.apply(this, arguments);
+      try {
+        window.db.bankTransactions = window.db.bankTransactions.filter(t =>
+          !(t.type === 'deposit' && t.receiptId && t.status !== 'reversed'));
+        if (typeof save === 'function') save();
+      } catch (e) {}
+      return r;
+    };
+  }
+
+  // D) Clean customerBalance
+  window.customerBalance = function (id) {
+    let bal = 0;
+    AR(window.db.customerCheques)
+      .filter(c => c.customerId === id && c.status !== 'Bounced' && c.status !== 'Cancelled')
+      .forEach(c => { bal += NN(c.amount); });
+    AR(window.db.payments)
+      .filter(p => p.type === 'customer_refund' && p.customerId === id)
+      .forEach(p => { bal -= NN(p.amount); });
+    return bal;
+  };
+
+  // E) What-if reset function
+  window.resetWhatIfScenario = function () {
+    try {
+      window._whatIfScenario = { extraPurchases: [], extraReceipts: [], postponeWeeks: 0, costReductionPct: 0 };
+      if (typeof _whatIfScenario !== 'undefined') {
+        _whatIfScenario.extraPurchases = [];
+        _whatIfScenario.extraReceipts = [];
+        _whatIfScenario.postponeWeeks = 0;
+        _whatIfScenario.costReductionPct = 0;
+      }
+      if (typeof render === 'function') render();
+    } catch (e) {}
+  };
+
+  // F) Cleanup legacy duplicate deposits
+  setTimeout(function () {
+    try {
+      if (!Array.isArray(window.db.bankTransactions)) return;
+      let n = 0;
+      window.db.bankTransactions.forEach(t => {
+        if (t.type === 'deposit' && t.receiptId && t.status !== 'reversed') {
+          t.status = 'reversed'; t.reversedAt = new Date().toISOString(); n++;
+        }
+      });
+      if (n > 0) { if (typeof save === 'function') save(); console.log('✅ Reversed ' + n + ' dup deposits'); }
+    } catch (e) {}
+  }, 800);
+
+  console.log('%c✅ EMERGENCY PATCH v1 LOADED', 'color:#10b981;font-weight:bold;font-size:13px');
+})();
+</script>
 </body>
 </html>
