@@ -21102,6 +21102,109 @@ if (document.readyState === 'loading') {
 
 })();
 </script>
+  <script>
+'use strict';
+/* ═══════════════════════════════════════════════════════════════════════
+   PART 3.5 — LOGIN PERSISTENCE FIX
+   Fixes: session lost on page reload → login loop.
+   Persists the logged-in user in localStorage.
+═══════════════════════════════════════════════════════════════════════ */
 
+(function fixLoginPersistence() {
+  if (window._loginPersistenceFixed) return;
+  window._loginPersistenceFixed = true;
+
+  const SESSION_KEY = 'lankashoe_session_id';
+
+  /* ─── 1. Save session BEFORE reload on successful login ───
+     Capture-phase listener on document fires before the form's
+     bubble-phase listener, so we read the credentials + save first. */
+  document.addEventListener('submit', function (e) {
+    const form = e.target;
+    if (!form || form.id !== '_loginForm') return;
+    const uEl = document.getElementById('_loginUser');
+    const pEl = document.getElementById('_loginPwd');
+    if (!uEl || !pEl) return;
+    const username = uEl.value.trim().toLowerCase();
+    const pwd = pEl.value;
+    const user = arr(db.users).find(x =>
+      x.username.toLowerCase() === username && x.active);
+    if (user && user.passwordHash === hashPassword(pwd)) {
+      try { localStorage.setItem(SESSION_KEY, user.id); } catch (err) {}
+    }
+  }, true);
+
+  /* ─── 2. Restore currentUser from localStorage ─── */
+  const _getCurrent = window.getCurrentUser;
+  window.getCurrentUser = function () {
+    const u = _getCurrent ? _getCurrent.apply(this, arguments) : null;
+    if (u) return u;
+    try {
+      const sid = localStorage.getItem(SESSION_KEY);
+      if (!sid) return null;
+      const user = arr(db.users).find(x => x.id === sid && x.active);
+      if (user) return user;
+      localStorage.removeItem(SESSION_KEY);
+    } catch (e) {}
+    return null;
+  };
+
+  /* ─── 3. hasPerm / requirePerm use the restored user ─── */
+  window.hasPerm = function (perm) {
+    const u = window.getCurrentUser();
+    if (!u) return false;
+    const role = window.ROLES ? window.ROLES[u.role] : null;
+    if (!role) return false;
+    return role.perms.indexOf(perm) !== -1;
+  };
+
+  window.requirePerm = function (perm, actionName) {
+    if (window.hasPerm(perm)) return true;
+    window.toast('⛔ You don\'t have permission: ' + (actionName || perm),
+      'error');
+    return false;
+  };
+
+  /* ─── 4. Skip the login screen if a valid session exists ─── */
+  const origShowLogin = window.showLoginScreen;
+  window.showLoginScreen = function () {
+    try {
+      const sid = localStorage.getItem(SESSION_KEY);
+      if (sid) {
+        const user = arr(db.users).find(x => x.id === sid && x.active);
+        if (user) {
+          /* Valid session — don't show login */
+          const bootScr = document.getElementById('bootScreen');
+          const appRoot = document.getElementById('appRoot');
+          if (bootScr) bootScr.style.display = 'none';
+          if (appRoot) appRoot.style.display = 'flex';
+          /* Ensure dashboard renders */
+          try {
+            window.normalizeDb();
+            window.applySettings();
+            window.render();
+          } catch (e) {}
+          return;
+        }
+        localStorage.removeItem(SESSION_KEY);
+      }
+    } catch (e) {}
+    if (origShowLogin) origShowLogin.apply(this, arguments);
+  };
+
+  /* ─── 5. Logout clears the session ─── */
+  const origLogout = window.logout;
+  window.logout = function () {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    if (origLogout) origLogout.apply(this, arguments);
+    else window.location.reload();
+  };
+
+  console.log('%c✅ Part 3.5 — Login persistence fixed',
+    'color:#10b981;font-weight:bold;font-size:12px');
+  console.log('%c   Default login: owner / owner',
+    'color:#f59e0b;font-weight:bold;font-size:12px');
+})();
+</script>
 </body>
 </html>
