@@ -228,3 +228,135 @@
     init();
   }
 })();
+
+/* ═══════════════════════════════════════════════════════════════════════
+   FIX PATCH v1 — Data persistence bug fix
+   Root cause: setting window.db alone doesn't update the app's `db`
+   variable, so saving sent stale data to the server.
+   Fix: also reassign `db` at script scope + load from server FIRST.
+═══════════════════════════════════════════════════════════════════════ */
+(function lanModeFixV1() {
+  if (window._lanModeFixV1) return;
+  window._lanModeFixV1 = true;
+
+  const SERVER = location.origin;
+
+  /* ── Override loadFromFirestore — properly reassign `db` ── */
+  window.loadFromFirestore = async function () {
+    try {
+      const r = await fetch(SERVER + '/api/load');
+      const j = await r.json();
+      if (j.ok && j.data && !j.data._empty) {
+        /* CRITICAL FIX: reassign `db` at script scope (not just window.db) */
+        try {
+          // eslint-disable-next-line no-global-assign
+          db = j.data;
+        } catch (e) {
+          /* fallback — mutate in place */
+          const target = window.db;
+          if (target && typeof target === 'object') {
+            Object.keys(target).forEach(k => { delete target[k]; });
+            Object.keys(j.data).forEach(k => { target[k] = j.data[k]; });
+          }
+        }
+        window.db = j.data;
+        if (typeof takeSnapshot === 'function') takeSnapshot();
+        console.log('[LAN FIX] Loaded from server:',
+          Object.keys(j.data).length, 'collections',
+          '| customers:', (j.data.customers || []).length);
+        return true;
+      }
+      console.log('[LAN FIX] Server has no data yet');
+    } catch (e) {
+      console.error('[LAN FIX] Load failed:', e);
+    }
+    return false;
+  };
+
+  /* ── Override pushToFirestore — log failures visibly ── */
+  window.pushToFirestore = async function () {
+    try {
+      const r = await fetch(SERVER + '/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: window.db })
+      });
+      const j = await r.json();
+      if (j.ok) {
+        try {
+          localStorage.setItem('lankashoe_cache', JSON.stringify(window.db));
+        } catch (e) {}
+        if (typeof updateSyncStatus === 'function') {
+          updateSyncStatus('Saved ' + new Date().toLocaleTimeString('en-GB',
+            { hour: '2-digit', minute: '2-digit' }));
+        }
+        console.log('[LAN FIX] ✓ Saved to server (' +
+          JSON.stringify(window.db).length + ' bytes)');
+      } else {
+        console.error('[LAN FIX] Save rejected:', j.error);
+        if (typeof toast === 'function') toast('Save failed: ' + j.error, 'error');
+        if (typeof updateSyncStatus === 'function') updateSyncStatus('⚠ Save failed');
+      }
+      return j.ok;
+    } catch (e) {
+      console.error('[LAN FIX] Save network error:', e);
+      if (typeof updateSyncStatus === 'function') updateSyncStatus('⚠ Server offline');
+      if (typeof toast === 'function') toast('Server offline — saved locally', 'warn');
+      return false;
+    }
+  };
+
+  /* ── Rebind login button — load from SERVER FIRST ── */
+  function rebindLoginButton() {
+    const btn = document.getElementById('lanEnterBtn');
+    if (!btn) {
+      setTimeout(rebindLoginButton, 500);
+      return;
+    }
+
+    btn.onclick = async () => {
+      /* PIN check */
+      try {
+        const health = await fetch(SERVER + '/api/health').then(r => r.json());
+        if (health.pinRequired) {
+          const pin = prompt('Enter server PIN:');
+          if (pin === null) return;
+          const authRes = await fetch(SERVER + '/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin })
+          });
+          const authJson = await authRes.json();
+          if (!authJson.ok) { alert('Invalid PIN'); return; }
+        }
+      } catch (e) {}
+
+      if (typeof showApp === 'function') showApp();
+
+      /* 1. Try to load from server FIRST (source of truth) */
+      const ok = await window.loadFromFirestore();
+
+      /* 2. If server has no data, fall back to local cache */
+      if (!ok) {
+        console.log('[LAN FIX] Server empty — using local cache');
+        if (typeof loadLocalCache === 'function') await loadLocalCache();
+      }
+
+      if (typeof normalizeDb === 'function') normalizeDb();
+      if (typeof applySettings === 'function') applySettings();
+      if (typeof render === 'function') render();
+    };
+
+    console.log('[LAN FIX v1] Login button rebound');
+  }
+
+  /* Try to rebind immediately, then retry */
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(rebindLoginButton, 800));
+  } else {
+    setTimeout(rebindLoginButton, 800);
+  }
+
+  console.log('%c✅ LAN FIX v1 loaded — data persistence patched',
+    'color:#10b981;font-weight:bold;font-size:13px');
+})();
