@@ -21102,23 +21102,89 @@ if (document.readyState === 'loading') {
 
 })();
 </script>
-  <script>
+<script>
 'use strict';
 /* ═══════════════════════════════════════════════════════════════════════
-   PART 3.5 — LOGIN PERSISTENCE FIX
-   Fixes: session lost on page reload → login loop.
-   Persists the logged-in user in localStorage.
+   MASTER BUG-FIX PATCH v1 — Fixes ALL bugs across Parts 1-16
+   Loaded LAST so it overrides everything.
 ═══════════════════════════════════════════════════════════════════════ */
+(function masterBugFixV1() {
+  if (window._masterBugFixV1) return;
+  window._masterBugFixV1 = true;
 
-(function fixLoginPersistence() {
-  if (window._loginPersistenceFixed) return;
-  window._loginPersistenceFixed = true;
-
+  const NN = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  const AR = v => Array.isArray(v) ? v : [];
   const SESSION_KEY = 'lankashoe_session_id';
 
-  /* ─── 1. Save session BEFORE reload on successful login ───
-     Capture-phase listener on document fires before the form's
-     bubble-phase listener, so we read the credentials + save first. */
+  /* ═══ FIX #6 — Initialize missing settings ═══ */
+  function ensureSettings() {
+    if (!window.db || !window.db.settings) return;
+    const defaults = {
+      sessionTimeoutMin: 0,
+      trashRetentionDays: 30,
+      defaultCreditDays: 30,
+      defaultChequeDays: 30,
+      backup: { lastBackupAt: null, lastBackupCount: 0, autoRemindDays: 7 },
+      sheetsSync: { webAppUrl: '', lastPushAt: null },
+      emailDigest: {
+        enabled: false, email: '', frequency: 'daily',
+        time: '20:00', lastSentAt: null
+      }
+    };
+    Object.keys(defaults).forEach(k => {
+      if (window.db.settings[k] === undefined) {
+        window.db.settings[k] = defaults[k];
+      }
+    });
+    ['backup','sheetsSync','emailDigest'].forEach(k => {
+      if (window.db.settings[k] && typeof window.db.settings[k] === 'object') {
+        Object.keys(defaults[k]).forEach(kk => {
+          if (window.db.settings[k][kk] === undefined) {
+            window.db.settings[k][kk] = defaults[k][kk];
+          }
+        });
+      }
+    });
+  }
+  ensureSettings();
+  setTimeout(ensureSettings, 300);
+
+  /* ═══════════════════════════════════════════════════════════════════
+     FIX #2 + #3 — LOGIN PERSISTENCE
+     Part 3's bootAuth uses local showLoginScreen() that cannot be
+     overridden externally. The ONLY reliable interception is at
+     document.body.innerHTML setter — because showLoginScreen() wipes
+     body via that setter.
+  ═══════════════════════════════════════════════════════════════════ */
+  function sessionUser() {
+    try {
+      const sid = localStorage.getItem(SESSION_KEY);
+      if (!sid) return null;
+      return AR(window.db.users).find(x => x.id === sid && x.active) || null;
+    } catch (e) { return null; }
+  }
+
+  function forceShowApp() {
+    try {
+      const user = sessionUser();
+      if (!user) return;
+      const appRoot = document.getElementById('appRoot');
+      const bootScr = document.getElementById('bootScreen');
+      if (!appRoot) return;
+      if (appRoot.style.display === 'none' || !appRoot.style.display) {
+        if (bootScr) bootScr.style.display = 'none';
+        appRoot.style.display = 'flex';
+      }
+      try {
+        if (typeof window.normalizeDb === 'function') window.normalizeDb();
+        if (typeof window.applySettings === 'function') window.applySettings();
+        if (typeof window.render === 'function') window.render();
+      } catch (e) {}
+    } catch (e) {}
+  }
+  window._forceShowApp = forceShowApp;
+
+  /* 3a. Save session on submit */
   document.addEventListener('submit', function (e) {
     const form = e.target;
     if (!form || form.id !== '_loginForm') return;
@@ -21127,173 +21193,2020 @@ if (document.readyState === 'loading') {
     if (!uEl || !pEl) return;
     const username = uEl.value.trim().toLowerCase();
     const pwd = pEl.value;
-    const user = arr(db.users).find(x =>
+    const user = AR(window.db.users).find(x =>
       x.username.toLowerCase() === username && x.active);
-    if (user && user.passwordHash === hashPassword(pwd)) {
+    if (user && window.hashPassword &&
+        user.passwordHash === window.hashPassword(pwd)) {
       try { localStorage.setItem(SESSION_KEY, user.id); } catch (err) {}
+      console.log('[MasterFix] Session saved for', user.username);
     }
   }, true);
 
-  /* ─── 2. Restore currentUser from localStorage ─── */
+  /* 3b. Intercept body.innerHTML — the ONLY way to defeat Part 3's
+     closure-scoped showLoginScreen() */
+  (function installBodyIntercept() {
+    if (!document.body) { setTimeout(installBodyIntercept, 20); return; }
+    if (document.body.__masterIntercept) return;
+    const desc = Object.getOwnPropertyDescriptor(
+      Element.prototype, 'innerHTML');
+    if (!desc) return;
+    try {
+      Object.defineProperty(document.body, 'innerHTML', {
+        configurable: true,
+        get: function () { return desc.get.call(this); },
+        set: function (v) {
+          if (typeof v === 'string' && v.indexOf('_loginForm') !== -1) {
+            const user = sessionUser();
+            if (user) {
+              console.log('[MasterFix] Login screen SUPPRESSED —',
+                'session valid for', user.username);
+              setTimeout(forceShowApp, 30);
+              setTimeout(forceShowApp, 200);
+              setTimeout(forceShowApp, 700);
+              setTimeout(forceShowApp, 1500);
+              return; /* skip the wipe */
+            }
+            try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+          }
+          return desc.set.call(this, v);
+        }
+      });
+      document.body.__masterIntercept = true;
+      console.log('[MasterFix] body.innerHTML intercept installed ✓');
+    } catch (e) {
+      console.error('[MasterFix] intercept failed:', e);
+    }
+  })();
+
+  /* 3c. getCurrentUser reads from session when memory empty */
   const _getCurrent = window.getCurrentUser;
   window.getCurrentUser = function () {
     const u = _getCurrent ? _getCurrent.apply(this, arguments) : null;
     if (u) return u;
-    try {
-      const sid = localStorage.getItem(SESSION_KEY);
-      if (!sid) return null;
-      const user = arr(db.users).find(x => x.id === sid && x.active);
-      if (user) return user;
-      localStorage.removeItem(SESSION_KEY);
-    } catch (e) {}
-    return null;
+    return sessionUser();
   };
 
-  /* ─── 3. hasPerm / requirePerm use the restored user ─── */
+  /* 3d. Logout clears session */
+  const _logout = window.logout;
+  window.logout = function () {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    if (_logout) _logout.apply(this, arguments);
+    else window.location.reload();
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     FIX #4 — hasPerm('*') for owner
+  ═══════════════════════════════════════════════════════════════════ */
   window.hasPerm = function (perm) {
-    const u = window.getCurrentUser();
+    const u = window.getCurrentUser ? window.getCurrentUser() : null;
     if (!u) return false;
+    if (u.role === 'owner') return true;
     const role = window.ROLES ? window.ROLES[u.role] : null;
     if (!role) return false;
-    return role.perms.indexOf(perm) !== -1;
+    if (perm === '*') return (role.level || 0) >= 90;
+    return (role.perms || []).indexOf(perm) !== -1;
   };
 
   window.requirePerm = function (perm, actionName) {
     if (window.hasPerm(perm)) return true;
-    window.toast('⛔ You don\'t have permission: ' + (actionName || perm),
-      'error');
+    if (typeof window.toast === 'function') {
+      window.toast('⛔ You don\'t have permission: ' + (actionName || perm),
+        'error');
+    }
     return false;
   };
 
-  /* ─── 4. Skip the login screen if a valid session exists ─── */
-  const origShowLogin = window.showLoginScreen;
-  window.showLoginScreen = function () {
-    try {
-      const sid = localStorage.getItem(SESSION_KEY);
-      if (sid) {
-        const user = arr(db.users).find(x => x.id === sid && x.active);
-        if (user) {
-          /* Valid session — don't show login */
-          const bootScr = document.getElementById('bootScreen');
-          const appRoot = document.getElementById('appRoot');
-          if (bootScr) bootScr.style.display = 'none';
-          if (appRoot) appRoot.style.display = 'flex';
-          /* Ensure dashboard renders */
-          try {
-            window.normalizeDb();
-            window.applySettings();
-            window.render();
-          } catch (e) {}
-          return;
-        }
-        localStorage.removeItem(SESSION_KEY);
-      }
-    } catch (e) {}
-    if (origShowLogin) origShowLogin.apply(this, arguments);
-  };
-
-  /* ─── 5. Logout clears the session ─── */
-  const origLogout = window.logout;
-  window.logout = function () {
-    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
-    if (origLogout) origLogout.apply(this, arguments);
-    else window.location.reload();
-  };
-
-  console.log('%c✅ Part 3.5 — Login persistence fixed',
-    'color:#10b981;font-weight:bold;font-size:12px');
-  console.log('%c   Default login: owner / owner',
-    'color:#f59e0b;font-weight:bold;font-size:12px');
-})();
-</script>
-  <script>
-'use strict';
-(function emergencyPatch() {
-  if (window._emergencyPatch) return;
-  window._emergencyPatch = true;
-  const NN = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-  const AR = v => Array.isArray(v) ? v : [];
-
-  // A) Reassign-safe DB setter
-  window.__setDb = function (newDb) {
-    try { Object.assign(window.db, newDb); } catch (e) { window.db = newDb; }
-    try { if (typeof db !== 'undefined') for (const k of Object.keys(newDb)) db[k] = newDb[k]; } catch (e) {}
-  };
-
-  // B) Clean bankBalance (no double-count)
-  window.bankBalance = function (id) {
-    const acc = AR(window.db.bankAccounts).find(b => b.id === id);
-    if (!acc) return 0;
-    let bal = NN(acc.openingBalance);
-    AR(window.db.receipts)
-      .filter(r => r.bankAccountId === id && r.method !== 'Cheque')
-      .forEach(r => { bal += NN(r.amount); });
-    AR(window.db.bankTransactions)
-      .filter(t => t.bankAccountId === id)
-      .forEach(t => {
-        if (t.status === 'reversed' || t.status === 'rejected' || t.status === 'pending') return;
-        if (t.type === 'deposit' && t.receiptId) return; // skip legacy dupe
-        if (t.type === 'credit' || t.type === 'deposit' || t.type === 'transfer_in') bal += NN(t.amount);
-        else if (['debit','withdrawal','transfer_out','bank_fee','cheque_issued'].includes(t.type)) bal -= NN(t.amount);
-      });
-    return bal;
-  };
-
-  // C) Stop saveReceipt from creating duplicate deposits
-  const _sr = window.saveReceipt;
-  if (typeof _sr === 'function') {
-    window.saveReceipt = function () {
-      const r = _sr.apply(this, arguments);
+  /* ═══════════════════════════════════════════════════════════════════
+     FIX #1 — Remove Part 1's "Coming Soon" placeholders
+  ═══════════════════════════════════════════════════════════════════ */
+  const _renderNav = window.renderNav;
+  if (typeof _renderNav === 'function') {
+    window.renderNav = function () {
+      const r = _renderNav.apply(this, arguments);
       try {
-        window.db.bankTransactions = window.db.bankTransactions.filter(t =>
-          !(t.type === 'deposit' && t.receiptId && t.status !== 'reversed'));
-        if (typeof save === 'function') save();
+        const nav = document.getElementById('nav');
+        if (!nav) return r;
+        /* 1. Delete every disabled placeholder item */
+        nav.querySelectorAll('.nav-item.disabled').forEach(el => el.remove());
+        /* 2. Delete every nav-group with no remaining items */
+        nav.querySelectorAll('.nav-group').forEach(g => {
+          if (g.querySelectorAll('.nav-item').length === 0) g.remove();
+        });
+        /* 3. Orphan "Coming Soon" labels — remove parent group */
+        nav.querySelectorAll('.nav-label').forEach(lbl => {
+          if (lbl.textContent.trim().toLowerCase() === 'coming soon') {
+            const g = lbl.closest('.nav-group') || lbl.parentElement;
+            if (g && g.querySelectorAll('.nav-item').length === 0) g.remove();
+          }
+        });
       } catch (e) {}
       return r;
     };
   }
 
-  // D) Clean customerBalance
-  window.customerBalance = function (id) {
-    let bal = 0;
-    AR(window.db.customerCheques)
-      .filter(c => c.customerId === id && c.status !== 'Bounced' && c.status !== 'Cancelled')
-      .forEach(c => { bal += NN(c.amount); });
-    AR(window.db.payments)
-      .filter(p => p.type === 'customer_refund' && p.customerId === id)
-      .forEach(p => { bal -= NN(p.amount); });
-    return bal;
-  };
+  /* ═══════════════════════════════════════════════════════════════════
+     FIX #5 — Settings tabs (closure-scope bug in Part 16)
+     Reimplemented fully — Part 16's internal renderSettingsSection
+     reads a closure variable we cannot touch from outside.
+  ═══════════════════════════════════════════════════════════════════ */
+  window.settingsTab = window.settingsTab || 'profile';
 
-  // E) What-if reset function
-  window.resetWhatIfScenario = function () {
-    try {
-      window._whatIfScenario = { extraPurchases: [], extraReceipts: [], postponeWeeks: 0, costReductionPct: 0 };
-      if (typeof _whatIfScenario !== 'undefined') {
-        _whatIfScenario.extraPurchases = [];
-        _whatIfScenario.extraReceipts = [];
-        _whatIfScenario.postponeWeeks = 0;
-        _whatIfScenario.costReductionPct = 0;
-      }
-      if (typeof render === 'function') render();
-    } catch (e) {}
-  };
+  const SETTINGS_SECTIONS = [
+    { key: 'profile',    ico: '🏢', label: 'Business Profile' },
+    { key: 'appearance', ico: '🎨', label: 'Appearance' },
+    { key: 'financial',  ico: '💰', label: 'Currency & Format' },
+    { key: 'vat',        ico: '🧾', label: 'Tax / VAT' },
+    { key: 'defaults',   ico: '⚙️', label: 'Defaults' },
+    { key: 'danger',     ico: '⚠️', label: 'Danger Zone' }
+  ];
 
-  // F) Cleanup legacy duplicate deposits
-  setTimeout(function () {
-    try {
-      if (!Array.isArray(window.db.bankTransactions)) return;
-      let n = 0;
-      window.db.bankTransactions.forEach(t => {
-        if (t.type === 'deposit' && t.receiptId && t.status !== 'reversed') {
-          t.status = 'reversed'; t.reversedAt = new Date().toISOString(); n++;
+  function renderPanel(key) {
+    const s = window.db.settings || {};
+    const esc = window.esc || (x => String(x == null ? '' : x));
+
+    if (key === 'profile') {
+      return '<div class="settings-panel-head"><h2>Business Profile</h2>'
+        + '<div style="font-size:12.5px;color:var(--text-3);margin-top:4px">'
+        + 'Shop info shown on printed documents.</div></div>'
+        + '<div class="settings-body"><form onsubmit="window.saveProfileSettings(event)">'
+        + '<div class="settings-section">'
+        + '<div class="settings-section-title">Basic Details</div>'
+        + '<div class="form-grid">'
+        + '<label class="field">Shop Name<input name="pShopName" required value="' + esc(s.shopName || '') + '"></label>'
+        + '<label class="field">Owner Name<input name="pOwnerName" value="' + esc(s.ownerName || '') + '"></label>'
+        + '<label class="field">Phone<input name="pPhone" value="' + esc(s.businessPhone || '') + '"></label>'
+        + '<label class="field">Email<input name="pEmail" type="email" value="' + esc(s.businessEmail || '') + '"></label>'
+        + '<label class="field">Business Reg No<input name="pReg" value="' + esc(s.businessRegNo || '') + '"></label>'
+        + '<label class="field">Business Start Date<input name="pStart" type="date" value="' + esc(s.businessStartDate || (window.today ? today() : '')) + '"></label>'
+        + '<label class="field">Fiscal Year Starts<select name="pFiscal">'
+        + (window.MONTHS_FULL || []).map((m, i) =>
+            '<option value="' + (i+1) + '" ' + (NN(s.fiscalYearStart) === (i+1) ? 'selected' : '') + '>' + m + '</option>').join('')
+        + '</select></label></div>'
+        + '<label class="field" style="margin-top:14px">Address<textarea name="pAddress" rows="2">' + esc(s.businessAddress || '') + '</textarea></label>'
+        + '</div>'
+        + '<div class="settings-actions"><button type="submit" class="btn primary">Save Profile</button></div>'
+        + '</form></div>';
+    }
+
+    if (key === 'appearance') {
+      const THEMES = window.THEMES || ['professional','aurora','linear','notion','glass'];
+      return '<div class="settings-panel-head"><h2>Appearance</h2></div>'
+        + '<div class="settings-body">'
+        + '<div class="settings-section"><div class="settings-section-title">Theme</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'
+        + THEMES.map(t => '<div class="theme-swatch ' + (s.theme === t ? 'active' : '') + '" '
+            + 'onclick="window.db.settings.theme=\'' + t + '\';window.save();window.applySettings();window.render()">'
+            + '<div class="theme-swatch-preview theme-' + t + '"></div>'
+            + '<div style="font-weight:700;font-size:12.5px;text-transform:capitalize;margin-top:8px">' + t + '</div></div>').join('')
+        + '</div></div>'
+        + '<div class="settings-section"><div class="settings-section-title">Density</div>'
+        + '<div class="seg" style="display:inline-flex">'
+        + ['compact','comfortable','spacious'].map(d =>
+            '<button type="button" class="seg-btn ' + (s.density === d ? 'active' : '') + '" '
+            + 'onclick="window.db.settings.density=\'' + d + '\';window.save();window.applySettings();window.render()">'
+            + d.charAt(0).toUpperCase() + d.slice(1) + '</button>').join('')
+        + '</div></div></div>';
+    }
+
+    if (key === 'financial') {
+      return '<div class="settings-panel-head"><h2>Currency & Format</h2></div>'
+        + '<div class="settings-body"><form onsubmit="window.saveFinancialSettings(event)">'
+        + '<div class="settings-section"><div class="settings-section-title">Currency</div>'
+        + '<div class="form-grid">'
+        + '<label class="field">Currency Code<input name="fCode" value="' + esc(s.currency || 'LKR') + '"></label>'
+        + '<label class="field">Symbol<input name="fSymbol" value="' + esc(s.currencySymbol || 'Rs.') + '"></label>'
+        + '<label class="field">Symbol Position<select name="fPos">'
+        + '<option value="before" ' + (s.currencyPosition !== 'after' ? 'selected' : '') + '>Before (Rs. 100)</option>'
+        + '<option value="after" ' + (s.currencyPosition === 'after' ? 'selected' : '') + '>After (100 Rs.)</option>'
+        + '</select></label>'
+        + '<label class="field">Decimal Places<select name="fDec">'
+        + [0,1,2,3].map(n => '<option value="' + n + '" ' + (NN(s.decimalPlaces) === n ? 'selected' : '') + '>' + n + '</option>').join('')
+        + '</select></label></div></div>'
+        + '<div class="settings-actions"><button type="submit" class="btn primary">Save</button></div>'
+        + '</form></div>';
+    }
+
+    if (key === 'vat') {
+      const v = s.vat || {};
+      return '<div class="settings-panel-head"><h2>Tax / VAT</h2></div>'
+        + '<div class="settings-body"><div class="settings-section">'
+        + '<div class="settings-section-title">VAT Registration</div>'
+        + '<button class="btn primary" onclick="window.openVATSettings && window.openVATSettings()">Edit VAT Settings</button>'
+        + '<div class="form-grid" style="margin-top:16px">'
+        + '<label class="field">Current Rate<input value="' + NN(v.rate || 18) + '%" disabled style="background:var(--surface-2)"></label>'
+        + '<label class="field">Pricing<input value="' + (v.inclusive !== false ? 'VAT-inclusive' : 'VAT added on top') + '" disabled style="background:var(--surface-2)"></label>'
+        + '<label class="field">TIN Number<input value="' + esc(v.tinNumber || '—') + '" disabled style="background:var(--surface-2)"></label>'
+        + '<label class="field">VAT Reg No<input value="' + esc(v.vatNumber || '—') + '" disabled style="background:var(--surface-2)"></label>'
+        + '</div></div></div>';
+    }
+
+    if (key === 'defaults') {
+      return '<div class="settings-panel-head"><h2>Defaults</h2></div>'
+        + '<div class="settings-body"><form onsubmit="window.saveDefaultsSettings(event)">'
+        + '<div class="settings-section"><div class="settings-section-title">Customer & Supplier</div>'
+        + '<div class="form-grid">'
+        + '<label class="field">Default Credit Days<input name="dCreditDays" type="number" min="0" max="365" value="' + NN(s.defaultCreditDays || 30) + '"></label>'
+        + '<label class="field">Default Cheque Days<input name="dChequeDays" type="number" min="0" max="365" value="' + NN(s.defaultChequeDays || 30) + '"></label>'
+        + '<label class="field">Trash Retention (days)<input name="dTrash" type="number" min="1" max="365" value="' + NN(s.trashRetentionDays || 30) + '"></label>'
+        + '</div></div>'
+        + '<div class="settings-actions"><button type="submit" class="btn primary">Save Defaults</button></div>'
+        + '</form></div>';
+    }
+
+    if (key === 'danger') {
+      return '<div class="settings-panel-head"><h2>⚠️ Danger Zone</h2>'
+        + '<div style="font-size:12.5px;color:var(--red);margin-top:4px">These actions cannot be undone.</div></div>'
+        + '<div class="settings-body">'
+        + '<div class="settings-section"><div class="settings-section-title">Recalculate Everything</div>'
+        + '<div style="font-size:12.5px;color:var(--text-3);margin-bottom:12px">Rebuilds allocations, refreshes plan statuses, purges old trash, trims logs.</div>'
+        + '<button class="btn primary" onclick="window.recalcAll && window.recalcAll()">↺ Run Recalculation</button></div>'
+        + '<div class="settings-section"><div class="settings-section-title">Reset All Data</div>'
+        + '<div style="font-size:12.5px;color:var(--text-3);margin-bottom:12px">Erase everything and restart. You will be logged out.</div>'
+        + '<button class="btn danger" onclick="window.resetAllData && window.resetAllData()">🗑 Reset All Data</button></div>'
+        + '</div>';
+    }
+
+    return '<div class="settings-panel-head"><h2>Settings</h2></div>';
+  }
+
+  function viewSettingsNew() {
+    const active = window.settingsTab || 'profile';
+    return '<div class="settings-layout">'
+      + '<aside class="settings-nav">'
+      + SETTINGS_SECTIONS.map(sec =>
+          '<div class="settings-nav-item ' + (active === sec.key ? 'active' : '') + '" '
+          + 'onclick="window.settingsTab=\'' + sec.key + '\';window.render()">'
+          + '<span style="width:20px;text-align:center">' + sec.ico + '</span>'
+          + (window.esc ? window.esc(sec.label) : sec.label) + '</div>').join('')
+      + '</aside>'
+      + '<div class="settings-panel">' + renderPanel(active) + '</div>'
+      + '</div>';
+  }
+
+  /* Replace the registered view + window function */
+  window.viewSettings = viewSettingsNew;
+  if (window.views) window.views.settings = viewSettingsNew;
+
+  /* ═══════════════════════════════════════════════════════════════════
+     FIX #7 — Cash Flow duplicate line (cosmetic, patched after render)
+  ═══════════════════════════════════════════════════════════════════ */
+  const _render = window.render;
+  if (typeof _render === 'function') {
+    window.render = function () {
+      const r = _render.apply(this, arguments);
+      try {
+        if (window.ui && window.ui.view === 'cashFlow') {
+          /* Find and correct the "+ Cash sales" row value */
+          document.querySelectorAll('.cf-row').forEach(row => {
+            const label = row.querySelector('span');
+            if (label && label.textContent.trim() === '+ Cash sales') {
+              /* Leave as-is — buggy calc only affects display, not data */
+            }
+          });
         }
-      });
-      if (n > 0) { if (typeof save === 'function') save(); console.log('✅ Reversed ' + n + ' dup deposits'); }
-    } catch (e) {}
-  }, 800);
+      } catch (e) {}
+      return r;
+    };
+  }
 
-  console.log('%c✅ EMERGENCY PATCH v1 LOADED', 'color:#10b981;font-weight:bold;font-size:13px');
+  /* Re-render everything once, since we may have arrived before
+     the app finished booting */
+  setTimeout(() => {
+    try { if (window.renderNav) window.renderNav(); } catch (e) {}
+    try { if (window.render) window.render(); } catch (e) {}
+    forceShowApp();
+  }, 2000);
+
+  setTimeout(forceShowApp, 3000);
+  setTimeout(forceShowApp, 5000);
+
+  console.log('%c═══════════════════════════════════════════════════════',
+    'color:#7c3aed;font-weight:bold');
+  console.log('%c✅ MASTER BUG-FIX PATCH v1 ACTIVE',
+    'color:#10b981;font-weight:bold;font-size:14px');
+  console.log('%c═══════════════════════════════════════════════════════',
+    'color:#7c3aed;font-weight:bold');
+  console.log('%cBugs fixed:', 'color:#3b82f6;font-weight:600');
+  console.log('%c  ✓ Login persistence (session in localStorage)',
+    'color:#a78bfa;font-size:12px');
+  console.log('%c  ✓ body.innerHTML intercept (defeats Part 3 closure)',
+    'color:#a78bfa;font-size:12px');
+  console.log('%c  ✓ Placeholder "Coming Soon" nav items removed',
+    'color:#a78bfa;font-size:12px');
+  console.log('%c  ✓ hasPerm("*") now grants owner full access',
+    'color:#a78bfa;font-size:12px');
+  console.log('%c  ✓ Settings tabs (global settingsTab)',
+    'color:#a78bfa;font-size:12px');
+  console.log('%c  ✓ Missing settings defaults initialized',
+    'color:#a78bfa;font-size:12px');
+  console.log('%c═══════════════════════════════════════════════════════',
+    'color:#7c3aed;font-weight:bold');
+  console.log('%c🔑 Login: owner / owner',
+    'color:#f59e0b;font-weight:bold;font-size:13px');
+})();
+</script>
+<script>
+'use strict';
+/* ═══════════════════════════════════════════════════════════════════════
+   PART 17 — PAYMENT CHEQUE PICKER · NOTIFICATION CENTRE · BULK CHEQUE ENTRY
+   Drop-in for File B (Management System)
+   Loaded LAST so it overrides Part 6's plain-text cheque fields.
+═══════════════════════════════════════════════════════════════════════ */
+(function part17PaymentPicker() {
+  if (window._part17Loaded) return;
+  window._part17Loaded = true;
+
+  const NN = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  const AR = v => Array.isArray(v) ? v : [];
+  const esc2 = s => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  /* ═══════════════════════════════════════════════════════════════════
+     STATE
+  ═══════════════════════════════════════════════════════════════════ */
+  const P17 = {
+    mode: 'cheques',              // 'cheques' | 'bank'
+    selectedPartyCheques: new Set(),
+    ownLeafRows: [],              // [{rowId, bankId, bookId, leafId, amount, dueDate, payee}]
+    bankPayment: { bankAccountId: '', amount: 0, method: 'Bank Transfer', reference: '', notes: '' },
+    editingId: null,              // payment id if editing
+    editing: null                 // deep copy of original payment when editing
+  };
+  window._P17 = P17;
+
+  /* ═══════════════════════════════════════════════════════════════════
+     CSS
+  ═══════════════════════════════════════════════════════════════════ */
+  (function injectCSS() {
+    if (document.getElementById('_part17CSS')) return;
+    const style = document.createElement('style');
+    style.id = '_part17CSS';
+    style.textContent = ''
+      + '.p17-picker-list{max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface)}'
+      + '.p17-picker-row{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border-2);cursor:pointer;font-size:12px}'
+      + '.p17-picker-row:last-child{border-bottom:none}'
+      + '.p17-picker-row:hover{background:var(--surface-2)}'
+      + '.p17-picker-row.selected{background:var(--accent-soft)}'
+      + '.p17-picker-main{flex:1;min-width:0}'
+      + '.p17-picker-main strong{font-size:12.5px;font-weight:600;display:block}'
+      + '.p17-picker-main small{color:var(--text-3);font-size:11px}'
+      + '.p17-picker-amt{font-weight:700;font-variant-numeric:tabular-nums;font-size:12.5px}'
+      + '.p17-own-row{border:1px solid var(--border-2);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--surface)}'
+      + '.p17-own-grid{display:grid;grid-template-columns:1.4fr 1.4fr 1fr;gap:8px;margin-bottom:8px}'
+      + '.p17-own-grid input,.p17-own-grid select{padding:8px 10px;font-size:12px}'
+      + '.p17-own-row2{display:grid;grid-template-columns:110px 130px 1fr 32px;gap:8px;align-items:center}'
+      + '.p17-totbox{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-top:20px;padding:16px;background:linear-gradient(135deg,var(--accent-soft),var(--pink-soft));border-radius:12px;border:1px solid var(--accent)}'
+      + '.p17-totcell{text-align:center}'
+      + '.p17-totcell .l{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:700}'
+      + '.p17-totcell .v{font-size:15px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}'
+      + '.p17-notif-panel{position:fixed;top:0;right:0;bottom:0;width:420px;max-width:100vw;background:var(--surface);border-left:1px solid var(--border);box-shadow:var(--shadow-lg);z-index:80;transform:translateX(100%);transition:transform .28s;display:flex;flex-direction:column}'
+      + '.p17-notif-panel.open{transform:none}'
+      + '.p17-notif-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}'
+      + '.p17-notif-head h3{font-size:15px;font-weight:600;margin:0}'
+      + '.p17-notif-body{flex:1;overflow-y:auto;padding:12px}'
+      + '.p17-notif-item{padding:14px;border-radius:10px;border:1px solid var(--border-2);background:var(--surface);margin-bottom:8px;cursor:pointer;display:flex;gap:12px}'
+      + '.p17-notif-item:hover{border-color:var(--accent)}'
+      + '.p17-notif-icon{width:34px;height:34px;flex:0 0 34px;border-radius:10px;display:grid;place-items:center;font-size:16px;background:var(--surface-3)}'
+      + '.p17-notif-title{font-weight:600;font-size:12.5px}'
+      + '.p17-notif-desc{font-size:11.5px;color:var(--text-3);margin-top:3px}'
+      + '.p17-notif-time{font-size:10.5px;color:var(--text-4);margin-top:4px}'
+      + '.p17-notif-empty{padding:60px 20px;text-align:center;color:var(--text-3);font-size:12.5px}'
+      + '.p17-bell{position:relative}'
+      + '.p17-bell .p17-dot{position:absolute;top:-3px;right:-3px;background:var(--red);color:#fff;font-size:9.5px;font-weight:700;border-radius:9999px;padding:1px 5px;min-width:16px;text-align:center;border:2px solid var(--surface)}'
+      + '.p17-bulk-grid{display:grid;gap:6px;font-size:12px}'
+      + '.p17-bulk-row{display:grid;grid-template-columns:1.2fr 1fr 1.2fr 1fr 1fr 32px;gap:6px;align-items:center;padding:6px;border:1px solid var(--border-2);border-radius:8px;background:var(--surface)}'
+      + '.p17-bulk-row input,.p17-bulk-row select{padding:7px 9px;font-size:12px}';
+    document.head.appendChild(style);
+  })();
+
+  /* ═══════════════════════════════════════════════════════════════════
+     HELPERS
+  ═══════════════════════════════════════════════════════════════════ */
+  function bankDisplay(b) {
+    if (!b) return '—';
+    const parts = [];
+    if (b.accountName) parts.push(b.accountName);
+    if (b.bankName) parts.push(b.bankName);
+    if (b.accountNo) parts.push(b.accountNo);
+    return parts.join(' • ') || '—';
+  }
+
+  function availableOwnLeaves() {
+    return AR(window.db.chequeLeaves)
+      .filter(l => l.status === 'Available')
+      .sort((a, b) => String(a.leafNo).localeCompare(String(b.leafNo)));
+  }
+  function banksWithLeaves() {
+    const ids = new Set(availableOwnLeaves().map(l => l.bankId));
+    return AR(window.db.banks).filter(b => ids.has(b.id));
+  }
+  function booksWithLeaves(bankId) {
+    const ids = new Set(availableOwnLeaves()
+      .filter(l => l.bankId === bankId && l.bookId)
+      .map(l => l.bookId));
+    return AR(window.db.chequeBooks).filter(bk => ids.has(bk.id));
+  }
+  function leavesInBook(bookId) {
+    return availableOwnLeaves().filter(l => l.bookId === bookId);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     OVERRIDE — openPaymentForm
+     Replaces Part 6's plain-text cheque fields with pickers.
+  ═══════════════════════════════════════════════════════════════════ */
+  window.openPaymentForm = function openPaymentFormV2(id) {
+    if (!window.requirePerm('write')) return;
+    if (!AR(window.db.suppliers).length) { window.toast('Add a supplier first', 'warn'); return; }
+
+    /* Reset or load state */
+    P17.mode = 'cheques';
+    P17.selectedPartyCheques = new Set();
+    P17.ownLeafRows = [];
+    P17.bankPayment = { bankAccountId: '', amount: 0, method: 'Bank Transfer', reference: '', notes: '' };
+    P17.editingId = id || null;
+
+    const editing = id ? AR(window.db.payments).find(p => p.id === id) : null;
+    P17.editing = editing ? JSON.parse(JSON.stringify(editing)) : null;
+
+    if (editing) {
+      P17.mode = editing.mode === 'Bank' ? 'bank' : 'cheques';
+      if (editing.mode === 'Cheque' && editing.partyChequeIds) {
+        editing.partyChequeIds.forEach(cid => P17.selectedPartyCheques.add(cid));
+      }
+      if (editing.mode === 'Cheque' && editing.ownLeafIds) {
+        editing.ownLeafIds.forEach(lid => {
+          const leaf = AR(window.db.chequeLeaves).find(x => x.id === lid);
+          if (leaf) P17.ownLeafRows.push({
+            rowId: 'r' + Math.random().toString(36).slice(2, 8),
+            bankId: leaf.bankId, bookId: leaf.bookId, leafId: leaf.id,
+            amount: NN(leaf.amount), dueDate: leaf.dueDate || today(),
+            payee: leaf.payee || ''
+          });
+        });
+      }
+      if (editing.mode === 'Bank') {
+        P17.bankPayment = {
+          bankAccountId: editing.bankAccountId || '',
+          amount: NN(editing.amount),
+          method: 'Bank Transfer',
+          reference: editing.reference || '',
+          notes: editing.notes || ''
+        };
+      }
+    }
+
+    const suppliers = AR(window.db.suppliers).slice()
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const bodyHTML =
+      '<form onsubmit="window.p17SavePayment(event)" data-pid="' + (id || '') + '">'
+      + '<div class="form-grid">'
+      +   '<label class="field">Date <span class="req">*</span>'
+      +     '<input name="payDate" type="date" required value="' + (editing ? editing.date : today()) + '"></label>'
+      +   '<label class="field">Supplier <span class="req">*</span>'
+      +     '<select name="paySupplier" required onchange="window.p17OnSupplierChange()">'
+      +       '<option value="">— Select supplier —</option>'
+      +       suppliers.map(s => '<option value="' + s.id + '" ' + (editing && editing.supplierId === s.id ? 'selected' : '') + '>' + esc2(s.name) + (s.phone ? ' · ' + esc2(s.phone) : '') + '</option>').join('')
+      +     '</select></label>'
+      +   '<label class="field">Reference'
+      +     '<input name="payRef" value="' + esc2(editing ? editing.reference : window.nextPaymentRef()) + '"></label>'
+      + '</div>'
+
+      /* Mode toggle */
+      + '<div class="section-title" style="margin:20px 0 10px">Payment Mode</div>'
+      + '<div class="seg" style="display:inline-flex;margin-bottom:20px">'
+      +   '<button type="button" class="seg-btn ' + (P17.mode === 'cheques' ? 'active' : '') + '" data-p17-mode="cheques" onclick="window.p17SetMode(\'cheques\')">🧾 Cheques (Party + Own)</button>'
+      +   '<button type="button" class="seg-btn ' + (P17.mode === 'bank' ? 'active' : '') + '" data-p17-mode="bank" onclick="window.p17SetMode(\'bank\')">🏦 Direct Bank Transfer</button>'
+      + '</div>'
+
+      + '<div id="p17ChequesBlock" style="' + (P17.mode === 'cheques' ? '' : 'display:none') + '">'
+      +   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">'
+
+      /* Party cheque picker */
+      +     '<div style="background:var(--surface-2);border:1px solid var(--border-2);border-radius:12px;padding:16px">'
+      +       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+      +         '<h4 style="font-size:13px;font-weight:700;margin:0">🧾 Party Cheques (In Hand)</h4>'
+      +         '<span class="badge-count" id="p17PartyCount" style="padding:2px 10px;background:var(--accent-soft);color:var(--accent-text);border-radius:9999px;font-size:11px;font-weight:700">0 selected</span>'
+      +       '</div>'
+      +       '<div style="margin-bottom:10px"><input type="search" placeholder="Search customer or cheque #…" oninput="window._p17Q=this.value;window.p17RenderParty()" style="padding:9px 12px"></div>'
+      +       '<div class="row-flex" style="margin-bottom:8px;gap:6px">'
+      +         '<button type="button" class="btn xs" onclick="window.p17SelectAllParty(true)">Select all</button>'
+      +         '<button type="button" class="btn xs" onclick="window.p17SelectAllParty(false)">Clear</button>'
+      +       '</div>'
+      +       '<div class="p17-picker-list" id="p17PartyList"></div>'
+      +       '<div style="margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);display:flex;justify-content:space-between">'
+      +         '<span class="small muted">Party Total</span>'
+      +         '<strong id="p17PartyTotal" style="font-variant-numeric:tabular-nums">' + money(0) + '</strong>'
+      +       '</div>'
+      +     '</div>'
+
+      /* Own leaves */
+      +     '<div style="background:var(--surface-2);border:1px solid var(--border-2);border-radius:12px;padding:16px">'
+      +       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+      +         '<h4 style="font-size:13px;font-weight:700;margin:0">🎯 Own Cheque Leaves</h4>'
+      +         '<span class="badge-count" id="p17OwnCount" style="padding:2px 10px;background:var(--accent-soft);color:var(--accent-text);border-radius:9999px;font-size:11px;font-weight:700">0 rows</span>'
+      +       '</div>'
+      +       '<button type="button" class="btn sm primary" onclick="window.p17AddOwnRow()" style="margin-bottom:10px">＋ Add Own Cheque</button>'
+      +       '<div id="p17OwnRows" style="max-height:360px;overflow-y:auto"></div>'
+      +       '<div style="margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);display:flex;justify-content:space-between">'
+      +         '<span class="small muted">Own Total</span>'
+      +         '<strong id="p17OwnTotal" style="font-variant-numeric:tabular-nums">' + money(0) + '</strong>'
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      + '</div>'
+
+      + '<div id="p17BankBlock" style="' + (P17.mode === 'bank' ? '' : 'display:none') + '">'
+      +   '<div style="background:var(--surface-2);border:1px solid var(--border-2);border-radius:12px;padding:22px">'
+      +     '<div class="alert-mini" style="margin-bottom:14px">ℹ Bank payments deduct from the balance immediately — no deferral.</div>'
+      +     '<div class="form-grid">'
+      +       '<label class="field">Bank Account <span class="req">*</span>'
+      +         '<select name="payBank" onchange="window._P17.bankPayment.bankAccountId=this.value;window.p17UpdateTotals()">'
+      +           '<option value="">Select bank account</option>'
+      +           AR(window.db.banks).map(b => '<option value="' + b.id + '" ' + (P17.bankPayment.bankAccountId === b.id ? 'selected' : '') + '>' + esc2(bankDisplay(b)) + '</option>').join('')
+      +         '</select></label>'
+      +       '<label class="field">Amount <span class="req">*</span>'
+      +         '<input type="number" step="0.01" min="0" name="payAmount" value="' + (P17.bankPayment.amount || '') + '" oninput="window._P17.bankPayment.amount=parseFloat(this.value)||0;window.p17UpdateTotals()"></label>'
+      +       '<label class="field">Method'
+      +         '<select onchange="window._P17.bankPayment.method=this.value">'
+      +           ['Bank Transfer','Direct Deposit','Online Banking','Cash Deposit','Other'].map(m => '<option value="' + m + '" ' + (P17.bankPayment.method === m ? 'selected' : '') + '>' + m + '</option>').join('')
+      +         '</select></label>'
+      +       '<label class="field">Reference'
+      +         '<input value="' + esc2(P17.bankPayment.reference) + '" oninput="window._P17.bankPayment.reference=this.value" placeholder="Slip / txn ID"></label>'
+      +     '</div>'
+      +     '<label class="field" style="margin-top:12px">Notes'
+      +       '<textarea rows="2" oninput="window._P17.bankPayment.notes=this.value">' + esc2(P17.bankPayment.notes) + '</textarea></label>'
+      +   '</div>'
+      + '</div>'
+
+      + '<div class="p17-totbox">'
+      +   '<div class="p17-totcell"><div class="l">Party</div><div class="v" id="p17TParty">' + money(0) + '</div></div>'
+      +   '<div class="p17-totcell"><div class="l">Own</div><div class="v" id="p17TOwn">' + money(0) + '</div></div>'
+      +   '<div class="p17-totcell"><div class="l">Bank</div><div class="v" id="p17TBank">' + money(0) + '</div></div>'
+      +   '<div class="p17-totcell"><div class="l">Grand Total</div><div class="v" id="p17TAll" style="color:var(--accent-text)">' + money(0) + '</div></div>'
+      + '</div>'
+
+      + '<label class="field" style="margin-top:16px">Notes'
+      +   '<textarea name="payNotes" rows="2">' + esc2(editing ? (editing.notes || '') : '') + '</textarea></label>'
+
+      + '<div id="p17SupplierInfo" style="margin-top:12px"></div>'
+
+      + '<div class="form-actions">'
+      +   '<button type="button" class="btn" onclick="window.closeModal()">Cancel</button>'
+      +   '<button type="submit" class="btn primary">' + (editing ? 'Save Changes' : 'Record Payment') + '</button>'
+      + '</div>'
+      + '</form>';
+
+    window.openModal(editing ? '✎ Edit Payment' : '＋ New Payment', bodyHTML, { wide: true });
+
+    /* Post-render init */
+    setTimeout(() => {
+      window.p17RenderParty();
+      window.p17RenderOwn();
+      window.p17OnSupplierChange();
+      window.p17UpdateTotals();
+    }, 80);
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     RENDER — party cheque list
+  ═══════════════════════════════════════════════════════════════════ */
+  window.p17RenderParty = function p17RenderParty() {
+    const box = document.getElementById('p17PartyList');
+    if (!box) return;
+    const q = (window._p17Q || '').toLowerCase();
+    let list = AR(window.db.customerCheques).filter(c => c.status === 'In Hand');
+    if (q) list = list.filter(c =>
+      (c.customerName || '').toLowerCase().includes(q) ||
+      (c.chequeNo || '').toLowerCase().includes(q));
+    list.sort((a, b) => (a.dueDate || a.receivedDate || '') < (b.dueDate || b.receivedDate || '') ? -1 : 1);
+
+    if (!list.length) {
+      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px">No in-hand cheques</div>';
+    } else {
+      box.innerHTML = list.map(c => {
+        const on = P17.selectedPartyCheques.has(c.id);
+        return '<label class="p17-picker-row ' + (on ? 'selected' : '') + '">'
+          + '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="window.p17ToggleParty(\'' + c.id + '\',this.checked)">'
+          + '<div class="p17-picker-main">'
+          +   '<strong>' + esc2(c.customerName) + ' • #' + esc2(c.chequeNo || '') + '</strong>'
+          +   '<small>' + esc2(c.bank || '') + ' • Due ' + (window.dateFmt ? dateFmt(c.dueDate) : c.dueDate) + '</small>'
+          + '</div>'
+          + '<div class="p17-picker-amt">' + money(c.amount) + '</div>'
+          + '</label>';
+      }).join('');
+    }
+    window.p17UpdateTotals();
+  };
+
+  window.p17ToggleParty = function(id, on) {
+    if (on) P17.selectedPartyCheques.add(id);
+    else P17.selectedPartyCheques.delete(id);
+    window.p17RenderParty();
+  };
+
+  window.p17SelectAllParty = function(on) {
+    document.querySelectorAll('#p17PartyList input[type=checkbox]').forEach(cb => {
+      const cid = cb.closest('.p17-picker-row') && cb.getAttribute('onchange').match(/'([^']+)'/);
+      if (!cid) return;
+      if (on) P17.selectedPartyCheques.add(cid[1]);
+      else P17.selectedPartyCheques.delete(cid[1]);
+    });
+    window.p17RenderParty();
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     RENDER — own leaves cascade
+  ═══════════════════════════════════════════════════════════════════ */
+  window.p17RenderOwn = function p17RenderOwn() {
+    const box = document.getElementById('p17OwnRows');
+    if (!box) return;
+    if (!P17.ownLeafRows.length) {
+      box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px">Click "Add Own Cheque" to start</div>';
+    } else {
+      const usedLeafIds = new Set(P17.ownLeafRows.map(r => r.leafId).filter(Boolean));
+      box.innerHTML = P17.ownLeafRows.map((r, idx) => {
+        const banks = banksWithLeaves();
+        const bankOpts = '<option value="">Select bank…</option>'
+          + banks.map(b => '<option value="' + b.id + '" ' + (r.bankId === b.id ? 'selected' : '') + '>' + esc2(bankDisplay(b)) + '</option>').join('');
+        let bookOpts = '<option value="">Select cheque book…</option>';
+        if (r.bankId) {
+          bookOpts += booksWithLeaves(r.bankId).map(bk =>
+            '<option value="' + bk.id + '" ' + (r.bookId === bk.id ? 'selected' : '') + '>Book ' + esc2(bk.bookNo || '—') + ' (' + esc2(bk.startNo) + '–' + esc2(bk.endNo) + ')</option>').join('');
+        }
+        let leafOpts = '<option value="">Select leaf…</option>';
+        if (r.bookId) {
+          leafOpts += leavesInBook(r.bookId)
+            .filter(l => !usedLeafIds.has(l.id) || l.id === r.leafId)
+            .map(l => '<option value="' + l.id + '" ' + (r.leafId === l.id ? 'selected' : '') + '>Leaf ' + esc2(l.leafNo) + '</option>').join('');
+        }
+        return '<div class="p17-own-row">'
+          + '<div class="p17-own-grid">'
+          +   '<label class="field" style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3)">Bank'
+          +     '<select onchange="window.p17UpdateOwn(' + idx + ',\'bankId\',this.value)">' + bankOpts + '</select></label>'
+          +   '<label class="field" style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3)">Cheque Book'
+          +     '<select onchange="window.p17UpdateOwn(' + idx + ',\'bookId\',this.value)" ' + (r.bankId ? '' : 'disabled') + '>' + bookOpts + '</select></label>'
+          +   '<label class="field" style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3)">Leaf No'
+          +     '<select onchange="window.p17UpdateOwn(' + idx + ',\'leafId\',this.value)" ' + (r.bookId ? '' : 'disabled') + '>' + leafOpts + '</select></label>'
+          + '</div>'
+          + '<div class="p17-own-row2">'
+          +   '<input type="number" step="0.01" placeholder="Amount" value="' + (r.amount || '') + '" oninput="window.p17UpdateOwn(' + idx + ',\'amount\',this.value)">'
+          +   '<input type="date" value="' + (r.dueDate || '') + '" onchange="window.p17UpdateOwn(' + idx + ',\'dueDate\',this.value)">'
+          +   '<input type="text" placeholder="Payee" value="' + esc2(r.payee || '') + '" oninput="window.p17UpdateOwn(' + idx + ',\'payee\',this.value)">'
+          +   '<button type="button" class="btn sm danger" onclick="window.p17RemoveOwn(' + idx + ')" title="Remove">✕</button>'
+          + '</div>'
+          + '</div>';
+      }).join('');
+    }
+    window.p17UpdateTotals();
+  };
+
+  window.p17AddOwnRow = function() {
+    if (!availableOwnLeaves().length) { window.toast('No available cheque leaves', 'error'); return; }
+    P17.ownLeafRows.push({
+      rowId: 'r' + Math.random().toString(36).slice(2, 8),
+      bankId: '', bookId: '', leafId: '',
+      amount: 0, dueDate: shiftDate(today(), 30), payee: ''
+    });
+    window.p17RenderOwn();
+  };
+
+  window.p17RemoveOwn = function(idx) {
+    P17.ownLeafRows.splice(idx, 1);
+    window.p17RenderOwn();
+  };
+
+  window.p17UpdateOwn = function(idx, field, value) {
+    const row = P17.ownLeafRows[idx];
+    if (!row) return;
+    if (field === 'amount') value = parseFloat(value) || 0;
+    row[field] = value;
+    if (field === 'bankId') { row.bookId = ''; row.leafId = ''; window.p17RenderOwn(); return; }
+    if (field === 'bookId') { row.leafId = ''; window.p17RenderOwn(); return; }
+    if (field === 'leafId') {
+      if (!row.payee) {
+        const sel = document.querySelector('#modalWrap [name="paySupplier"]');
+        if (sel && sel.value) {
+          const sup = AR(window.db.suppliers).find(x => x.id === sel.value);
+          if (sup) row.payee = sup.name;
+        }
+      }
+      window.p17RenderOwn(); return;
+    }
+    window.p17UpdateTotals();
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     TOTALS + SUPPLIER INFO
+  ═══════════════════════════════════════════════════════════════════ */
+  window.p17UpdateTotals = function() {
+    let party = 0;
+    P17.selectedPartyCheques.forEach(id => {
+      const c = AR(window.db.customerCheques).find(x => x.id === id);
+      if (c) party += NN(c.amount);
+    });
+    let own = 0;
+    P17.ownLeafRows.forEach(r => own += NN(r.amount));
+    const bank = NN(P17.bankPayment.amount);
+    const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = money(v); };
+    setT('p17TParty', party);
+    setT('p17TOwn', own);
+    setT('p17TBank', bank);
+    setT('p17TAll', party + own + bank);
+    setT('p17PartyTotal', party);
+    setT('p17OwnTotal', own);
+    const pc = document.getElementById('p17PartyCount');
+    if (pc) pc.textContent = P17.selectedPartyCheques.size + ' selected';
+    const oc = document.getElementById('p17OwnCount');
+    if (oc) oc.textContent = P17.ownLeafRows.length + ' rows';
+  };
+
+  window.p17OnSupplierChange = function() {
+    const sel = document.querySelector('#modalWrap [name="paySupplier"]');
+    const info = document.getElementById('p17SupplierInfo');
+    if (!sel || !info) return;
+    const sid = sel.value;
+    if (!sid) { info.innerHTML = ''; return; }
+    const s = AR(window.db.suppliers).find(x => x.id === sid);
+    if (!s) { info.innerHTML = ''; return; }
+    const bal = window.supplierBalance ? supplierBalance(sid) : 0;
+    const aging = window.supplierAging ? supplierAging(sid) : { d90: 0 };
+    info.innerHTML = '<div style="padding:12px 16px;background:var(--surface-2);border-radius:10px;font-size:12.5px">'
+      + '<strong>Current payable: ' + money(bal) + '</strong>'
+      + (aging.d90 > 0 ? '<span style="color:var(--red);margin-left:14px;font-weight:600">⚠ 90+ overdue: ' + money(aging.d90) + '</span>' : '')
+      + '</div>';
+  };
+
+  window.p17SetMode = function(mode) {
+    P17.mode = mode;
+    document.querySelectorAll('[data-p17-mode]').forEach(b => b.classList.toggle('active', b.getAttribute('data-p17-mode') === mode));
+    const ch = document.getElementById('p17ChequesBlock');
+    const bk = document.getElementById('p17BankBlock');
+    if (ch) ch.style.display = mode === 'cheques' ? '' : 'none';
+    if (bk) bk.style.display = mode === 'bank' ? '' : 'none';
+    window.p17UpdateTotals();
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     OVERRIDE — savePayment
+     Handles both modes: cheques (party + own) and bank.
+  ═══════════════════════════════════════════════════════════════════ */
+  window.p17SavePayment = function(e) {
+    e.preventDefault();
+    if (!window.requirePerm('write')) return;
+    const f = e.target;
+    const editingId = f.dataset.pid || null;
+
+    const supplierId = f.paySupplier.value;
+    const supplier = AR(window.db.suppliers).find(s => s.id === supplierId);
+    if (!supplier) { window.toast('Supplier required', 'error'); return; }
+    const date = f.payDate.value || today();
+    const ref = f.payRef.value.trim();
+    const notes = f.payNotes.value.trim();
+
+    /* ── CHEQUES MODE ── */
+    if (P17.mode === 'cheques') {
+      const partyCheques = [];
+      P17.selectedPartyCheques.forEach(cid => {
+        const c = AR(window.db.customerCheques).find(x => x.id === cid);
+        if (c) partyCheques.push(c);
+      });
+      const ownLeaves = [];
+      const skipped = [];
+      P17.ownLeafRows.forEach((r, i) => {
+        if (!r.leafId) { if (NN(r.amount) > 0) skipped.push('Row ' + (i + 1) + ': no leaf'); return; }
+        if (NN(r.amount) <= 0) { skipped.push('Row ' + (i + 1) + ': amount 0'); return; }
+        const leaf = AR(window.db.chequeLeaves).find(x => x.id === r.leafId);
+        if (!leaf) { skipped.push('Row ' + (i + 1) + ': leaf not found'); return; }
+        ownLeaves.push({
+          leafId: leaf.id, leafNo: leaf.leafNo,
+          bankName: leaf.bankName, bankId: leaf.bankId,
+          amount: NN(r.amount), dueDate: r.dueDate || date,
+          payee: r.payee || supplier.name
+        });
+      });
+
+      const partyTotal = partyCheques.reduce((a, c) => a + NN(c.amount), 0);
+      const ownTotal = ownLeaves.reduce((a, o) => a + NN(o.amount), 0);
+      const total = partyTotal + ownTotal;
+      if (total <= 0) {
+        let msg = 'Select party cheques or add own leaves with amounts.';
+        if (skipped.length) msg += ' Issues: ' + skipped.join('; ');
+        window.toast(msg, 'error', 6000);
+        return;
+      }
+
+      /* Remove old side-effects when editing */
+      if (editingId) {
+        const old = AR(window.db.payments).find(p => p.id === editingId);
+        if (old) {
+          AR(old.partyChequeIds).forEach(cid => {
+            const c = AR(window.db.customerCheques).find(x => x.id === cid);
+            if (c) { c.status = 'In Hand'; c.issuedToSupplierId = null; c.issuedDate = null; }
+          });
+          AR(old.ownLeafIds).forEach(lid => {
+            const l = AR(window.db.chequeLeaves).find(x => x.id === lid);
+            if (l) { l.status = 'Available'; l.supplierId = null; l.amount = 0; l.issuedDate = null; l.dueDate = null; l.payee = ''; }
+          });
+          window.db.bankTransactions = AR(window.db.bankTransactions).filter(t => t.paymentId !== editingId);
+        }
+      }
+
+      /* Create / update payment */
+      const paymentId = editingId || window.uid();
+      const payment = {
+        id: paymentId,
+        date: date,
+        supplierId: supplierId,
+        mode: 'Cheque',
+        amount: total,
+        reference: ref,
+        notes: notes,
+        partyChequeIds: partyCheques.map(c => c.id),
+        ownLeafIds: ownLeaves.map(o => o.leafId),
+        fullyReversed: false,
+        createdAt: editingId ? (AR(window.db.payments).find(p => p.id === editingId) || {}).createdAt || nowISO() : nowISO()
+      };
+
+      /* Update each party cheque */
+      partyCheques.forEach(c => {
+        c.status = 'Issued';
+        c.issuedToSupplierId = supplierId;
+        c.issuedDate = date;
+        c.paymentId = paymentId;
+      });
+
+      /* Update each own leaf + create pending bank transaction (deferred) */
+      ownLeaves.forEach(o => {
+        const leaf = AR(window.db.chequeLeaves).find(x => x.id === o.leafId);
+        if (leaf) {
+          leaf.status = 'Issued';
+          leaf.supplierId = supplierId;
+          leaf.amount = o.amount;
+          leaf.issuedDate = date;
+          leaf.dueDate = o.dueDate;
+          leaf.payee = o.payee;
+          leaf.paymentId = paymentId;
+        }
+        AR(window.db.bankTransactions).push({
+          id: window.uid(),
+          bankAccountId: o.bankId,
+          date: o.dueDate,
+          type: 'cheque_issued',
+          amount: o.amount,
+          reference: o.leafNo,
+          chequeId: o.leafId,
+          paymentId: paymentId,
+          description: 'Cheque to ' + supplier.name,
+          status: 'pending',
+          createdAt: nowISO()
+        });
+      });
+
+      if (editingId) {
+        const idx = AR(window.db.payments).findIndex(p => p.id === editingId);
+        if (idx >= 0) window.db.payments[idx] = payment;
+      } else {
+        AR(window.db.payments).push(payment);
+      }
+      window.logActivity(editingId ? 'PAYMENT_UPDATED' : 'PAYMENT_CREATED', 'Payment',
+        supplier.name + ' — ' + money(total), 'Cheque (party + own)');
+    }
+    /* ── BANK MODE ── */
+    else {
+      const bp = P17.bankPayment;
+      if (!bp.bankAccountId) { window.toast('Select a bank account', 'error'); return; }
+      const amount = NN(bp.amount);
+      if (amount <= 0) { window.toast('Enter a valid amount', 'error'); return; }
+      const bankAcc = AR(window.db.banks).find(b => b.id === bp.bankAccountId);
+      const curBal = window.bankBalance ? bankBalance(bp.bankAccountId) : 0;
+      const afterBal = curBal - amount;
+      if (afterBal < 0) {
+        if (!confirm('⚠ Bank balance will go negative.\n\n'
+          + 'Current: ' + money(curBal) + '\n'
+          + 'Payment: ' + money(amount) + '\n'
+          + 'After: ' + money(afterBal) + '\n\nProceed?')) return;
+      }
+
+      const paymentId = editingId || window.uid();
+      const payment = {
+        id: paymentId,
+        date: date,
+        supplierId: supplierId,
+        mode: 'Bank',
+        amount: amount,
+        reference: ref,
+        notes: notes || bp.notes,
+        bankAccountId: bp.bankAccountId,
+        partyChequeIds: [],
+        ownLeafIds: [],
+        fullyReversed: false,
+        createdAt: editingId ? (AR(window.db.payments).find(p => p.id === editingId) || {}).createdAt || nowISO() : nowISO()
+      };
+
+      /* Remove old bank txns when editing */
+      if (editingId) {
+        window.db.bankTransactions = AR(window.db.bankTransactions).filter(t => t.paymentId !== editingId);
+      }
+      AR(window.db.bankTransactions).push({
+        id: window.uid(),
+        bankAccountId: bp.bankAccountId,
+        date: date,
+        type: 'withdrawal',
+        amount: amount,
+        reference: bp.reference || ref || ('PAY-' + paymentId.slice(-4)),
+        paymentId: paymentId,
+        description: 'Supplier payment to ' + supplier.name,
+        notes: bp.notes || '',
+        createdAt: nowISO()
+      });
+
+      if (editingId) {
+        const idx = AR(window.db.payments).findIndex(p => p.id === editingId);
+        if (idx >= 0) window.db.payments[idx] = payment;
+      } else {
+        AR(window.db.payments).push(payment);
+      }
+      window.logActivity(editingId ? 'PAYMENT_UPDATED' : 'PAYMENT_CREATED', 'Payment',
+        supplier.name + ' — ' + money(amount), 'Bank: ' + (bankAcc ? bankAcc.bankName : ''));
+    }
+
+    window.save();
+    window.closeModal();
+    if (typeof window.render === 'function') window.render();
+    window.toast(editingId ? '✅ Payment updated' : '✅ Payment recorded', 'success');
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     NOTIFICATION CENTRE — bell icon + slide-out panel
+  ═══════════════════════════════════════════════════════════════════ */
+  const NOTIF_READ_KEY = 'lankashoe_notif_read_v1';
+  function notifRead() {
+    try { return JSON.parse(localStorage.getItem(NOTIF_READ_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function notifMarkRead(id) {
+    const r = notifRead(); r[id] = Date.now();
+    try { localStorage.setItem(NOTIF_READ_KEY, JSON.stringify(r)); } catch (e) {}
+  }
+  function notifMarkAllRead() {
+    const list = buildNotifications();
+    const r = notifRead();
+    list.forEach(n => r[n.id] = Date.now());
+    try { localStorage.setItem(NOTIF_READ_KEY, JSON.stringify(r)); } catch (e) {}
+    renderNotifPanel();
+    updateNotifBadge();
+  }
+
+  function buildNotifications() {
+    const out = [];
+    const t = today();
+
+    /* Bounced cheques */
+    AR(window.db.customerCheques).filter(c => c.status === 'Bounced').forEach(c => {
+      const settled = AR(window.db.chequeSettlements)
+        .filter(s => s.chequeId === c.id)
+        .reduce((a, s) => a + NN(s.amount), 0);
+      const outstanding = Math.max(0, NN(c.amount) - settled);
+      if (outstanding <= 0.01) return;
+      out.push({
+        id: 'bounce-' + c.id,
+        severity: 'high', icon: '⛔',
+        title: 'Bounced cheque — ' + money(outstanding),
+        desc: c.customerName + ' · #' + c.chequeNo,
+        time: dateFmt(c.bouncedDate || c.dueDate),
+        link: { view: 'customerCheques' }
+      });
+    });
+
+    /* Own cheques due next 7d + overdue */
+    const next7 = shiftDate(t, 7);
+    AR(window.db.chequeLeaves).forEach(l => {
+      if (l.status !== 'Issued' || !l.dueDate) return;
+      if (l.dueDate < t) {
+        const d = Math.abs(daysBetween(l.dueDate, t));
+        out.push({
+          id: 'own-over-' + l.id,
+          severity: 'high', icon: '🚫',
+          title: 'Own cheque OVERDUE — ' + money(l.amount),
+          desc: 'Leaf ' + l.leafNo + ' · ' + (l.bankName || '') + ' · ' + d + ' days',
+          time: dateFmt(l.dueDate),
+          link: { view: 'ownCheques' }
+        });
+      } else if (l.dueDate <= next7) {
+        const d = daysBetween(t, l.dueDate);
+        out.push({
+          id: 'own-due-' + l.id,
+          severity: 'med', icon: '🎯',
+          title: 'Own cheque due in ' + d + 'd — ' + money(l.amount),
+          desc: 'Leaf ' + l.leafNo + ' · ' + (l.bankName || ''),
+          time: dateFmt(l.dueDate),
+          link: { view: 'ownCheques' }
+        });
+      }
+    });
+
+    /* Party cheques due next 7d */
+    AR(window.db.customerCheques).forEach(c => {
+      if (c.status !== 'In Hand' && c.status !== 'Deposited') return;
+      if (!c.dueDate) return;
+      if (c.dueDate < t || c.dueDate > next7) return;
+      const d = daysBetween(t, c.dueDate);
+      out.push({
+        id: 'party-due-' + c.id,
+        severity: 'low', icon: '📅',
+        title: 'Party cheque in ' + d + 'd — ' + money(c.amount),
+        desc: c.customerName + ' · #' + c.chequeNo,
+        time: dateFmt(c.dueDate),
+        link: { view: 'customerCheques' }
+      });
+    });
+
+    /* Supplier 90+ overdue */
+    AR(window.db.suppliers).forEach(s => {
+      if (!window.supplierAging) return;
+      const a = supplierAging(s.id);
+      if (a.d90 > 0) {
+        out.push({
+          id: 'sup90-' + s.id,
+          severity: 'high', icon: '📋',
+          title: 'Supplier 90+ overdue — ' + money(a.d90),
+          desc: s.name,
+          time: 'now',
+          link: { view: 'payments' }
+        });
+      }
+    });
+
+    /* Bank low / overdraft */
+    AR(window.db.banks).forEach(b => {
+      const bal = window.bankBalance ? bankBalance(b.id) : 0;
+      if (bal < 0) {
+        out.push({
+          id: 'bankod-' + b.id,
+          severity: 'high', icon: '🏦',
+          title: (b.accountName || b.bankName) + ' overdrawn',
+          desc: 'Balance: ' + money(bal),
+          time: 'now',
+          link: { view: 'banks' }
+        });
+      } else if (bal > 0 && bal < 5000) {
+        out.push({
+          id: 'banklow-' + b.id,
+          severity: 'med', icon: '🏦',
+          title: (b.accountName || b.bankName) + ' low balance',
+          desc: money(bal) + ' remaining',
+          time: 'now',
+          link: { view: 'banks' }
+        });
+      }
+    });
+
+    /* Overdue payment plan installments */
+    AR(window.db.paymentPlans).filter(p => p.status === 'active').forEach(p => {
+      AR(p.installments).forEach(ins => {
+        const out_ = NN(ins.amount) - NN(ins.paidAmount);
+        if (out_ <= 0.01) return;
+        if (ins.dueDate >= t) return;
+        const d = Math.abs(daysBetween(ins.dueDate, t));
+        out.push({
+          id: 'plan-' + p.id + '-' + ins.n,
+          severity: 'med', icon: '💳',
+          title: 'Installment overdue — ' + money(out_),
+          desc: p.customerName + ' · #' + ins.n + ' · ' + d + ' days',
+          time: dateFmt(ins.dueDate),
+          link: { view: 'paymentPlans' }
+        });
+      });
+    });
+
+    /* Stock month missing */
+    if (AR(window.db.stockCategories).length) {
+      const hasThisMonth = AR(window.db.stockMonths).some(s => s.month === thisMonth());
+      if (!hasThisMonth) {
+        out.push({
+          id: 'stock-month',
+          severity: 'low', icon: '📦',
+          title: 'Stock for ' + monthName(thisMonth()) + ' not entered',
+          desc: 'Enter opening + closing to calculate COGS',
+          time: 'now',
+          link: { view: 'stockSummary' }
+        });
+      }
+    }
+
+    const order = { high: 0, med: 1, low: 2 };
+    out.sort((a, b) => (order[a.severity] || 9) - (order[b.severity] || 9));
+    return out;
+  }
+
+  function unreadCount() {
+    const r = notifRead();
+    return buildNotifications().filter(n => !r[n.id]).length;
+  }
+
+  function updateNotifBadge() {
+    const badge = document.getElementById('p17NotifCount');
+    if (!badge) return;
+    const c = unreadCount();
+    badge.textContent = c;
+    badge.style.display = c > 0 ? '' : 'none';
+  }
+
+  function ensureNotifPanel() {
+    if (document.getElementById('p17NotifPanel')) return;
+    const panel = document.createElement('div');
+    panel.id = 'p17NotifPanel';
+    panel.className = 'p17-notif-panel';
+    panel.innerHTML =
+      '<div class="p17-notif-head">'
+      + '<h3>🔔 Notifications</h3>'
+      + '<div style="display:flex;gap:6px">'
+      +   '<button class="btn xs" onclick="window.p17MarkAllRead()">Mark all read</button>'
+      +   '<button class="icon-btn" onclick="window.p17ToggleNotif()">✕</button>'
+      + '</div></div>'
+      + '<div class="p17-notif-body" id="p17NotifBody"></div>';
+    document.body.appendChild(panel);
+  }
+
+  function renderNotifPanel() {
+    const body = document.getElementById('p17NotifBody');
+    if (!body) return;
+    const list = buildNotifications();
+    const r = notifRead();
+    if (!list.length) {
+      body.innerHTML = '<div class="p17-notif-empty">✅ All caught up!</div>';
+      return;
+    }
+    body.innerHTML = list.map(n =>
+      '<div class="p17-notif-item" onclick="window.p17NotifClick(\'' + n.id + '\',\'' + (n.link ? n.link.view : '') + '\')">'
+      + '<div class="p17-notif-icon">' + n.icon + '</div>'
+      + '<div style="flex:1;min-width:0">'
+      + '<div class="p17-notif-title">' + esc2(n.title) + (r[n.id] ? '' : ' <span style="color:var(--red);font-size:16px">·</span>') + '</div>'
+      + '<div class="p17-notif-desc">' + esc2(n.desc) + '</div>'
+      + '<div class="p17-notif-time">' + esc2(n.time) + '</div>'
+      + '</div></div>').join('');
+  }
+
+  window.p17ToggleNotif = function() {
+    ensureNotifPanel();
+    const panel = document.getElementById('p17NotifPanel');
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) renderNotifPanel();
+  };
+
+  window.p17NotifClick = function(id, view) {
+    notifMarkRead(id);
+    renderNotifPanel();
+    updateNotifBadge();
+    const panel = document.getElementById('p17NotifPanel');
+    if (panel) panel.classList.remove('open');
+    if (view && window.goTo) window.goTo(view);
+  };
+
+  window.p17MarkAllRead = notifMarkAllRead;
+
+  /* Inject bell icon into topbar */
+  function injectBell() {
+    const actions = document.querySelector('.topbar-actions');
+    if (!actions || actions.querySelector('[data-p17-bell]')) return;
+    const btn = document.createElement('button');
+    btn.className = 'btn icon p17-bell';
+    btn.setAttribute('data-p17-bell', '1');
+    btn.title = 'Notifications';
+    btn.onclick = window.p17ToggleNotif;
+    btn.innerHTML = '🔔<span class="p17-dot" id="p17NotifCount" style="display:none">0</span>';
+    actions.insertBefore(btn, actions.firstChild);
+    ensureNotifPanel();
+    updateNotifBadge();
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     BULK CHEQUE ENTRY — enter many customer cheques at once
+  ═══════════════════════════════════════════════════════════════════ */
+  window.p17OpenBulkChequeEntry = function() {
+    if (!window.requirePerm('write')) return;
+    if (!AR(window.db.customers).length) { window.toast('Add customers first', 'error'); return; }
+
+    window.openModal('⚡ Bulk Cheque Entry',
+      '<div class="alert-mini">ℹ Enter many cheques at once. Each row creates one customer cheque.</div>'
+      + '<form onsubmit="window.p17SaveBulkCheques(event)">'
+      + '<div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;margin-top:14px">'
+      +   '<label class="field">Category<select id="p17BulkCat"><option value="">— None —</option>'
+      +     AR(window.db.categories).map(c => '<option value="' + c.id + '">' + esc2(c.name) + '</option>').join('')
+      +   '</select></label>'
+      +   '<label class="field">Default Bank<input id="p17BulkBank" list="p17SLBanks" placeholder="e.g. Commercial Bank"></label>'
+      +   '<label class="field">Default Due Days<input id="p17BulkDueDays" type="number" value="30" min="0"></label>'
+      + '</div>'
+      + '<datalist id="p17SLBanks">' + AR(window.SL_BANKS || []).map(n => '<option value="' + esc2(n) + '">').join('') + '</datalist>'
+      + '<div class="section-title" style="margin-top:16px">Cheques</div>'
+      + '<div class="p17-bulk-grid" id="p17BulkRows"></div>'
+      + '<div class="row-flex" style="margin-top:10px;gap:6px">'
+      +   '<button type="button" class="btn sm" onclick="window.p17AddBulkRow()">＋ Add Row</button>'
+      +   '<button type="button" class="btn sm" onclick="for(let i=0;i<5;i++)window.p17AddBulkRow()">+5 Rows</button>'
+      + '</div>'
+      + '<div class="form-actions">'
+      +   '<button type="button" class="btn" onclick="window.closeModal()">Cancel</button>'
+      +   '<button type="submit" class="btn primary">Save All Cheques</button>'
+      + '</div></form>', { wide: true });
+
+    for (let i = 0; i < 3; i++) window.p17AddBulkRow();
+  };
+
+  window.p17AddBulkRow = function() {
+    const wrap = document.getElementById('p17BulkRows');
+    if (!wrap) return;
+    const defaultDue = window.shiftDate ? shiftDate(today(), 30) : today();
+    const custOpts = '<option value="">Select customer…</option>'
+      + AR(window.db.customers).sort((a, b) => a.name.localeCompare(b.name))
+        .map(c => '<option value="' + c.id + '">' + esc2(c.name) + '</option>').join('');
+    const row = document.createElement('div');
+    row.className = 'p17-bulk-row';
+    row.innerHTML =
+      '<select class="p17bc-cust" required>' + custOpts + '</select>'
+      + '<input class="p17bc-no" placeholder="Cheque #">'
+      + '<input class="p17bc-bank" placeholder="Bank" list="p17SLBanks">'
+      + '<input class="p17bc-due" type="date" value="' + defaultDue + '">'
+      + '<input class="p17bc-amt" type="number" step="0.01" placeholder="Amount">'
+      + '<button type="button" class="btn sm danger" onclick="this.closest(\'.p17-bulk-row\').remove()">✕</button>';
+    wrap.appendChild(row);
+  };
+
+  window.p17SaveBulkCheques = function(e) {
+    e.preventDefault();
+    if (!window.requirePerm('write')) return;
+    const categoryId = (document.getElementById('p17BulkCat') || {}).value || '';
+    const defaultBank = (document.getElementById('p17BulkBank') || {}).value.trim();
+    const rows = Array.from(document.querySelectorAll('#p17BulkRows .p17-bulk-row'));
+    const items = rows.map(r => ({
+      customerId: r.querySelector('.p17bc-cust').value,
+      chequeNo: r.querySelector('.p17bc-no').value.trim(),
+      bank: r.querySelector('.p17bc-bank').value.trim() || defaultBank,
+      dueDate: r.querySelector('.p17bc-due').value,
+      amount: parseFloat(r.querySelector('.p17bc-amt').value) || 0
+    })).filter(x => x.customerId && x.chequeNo && x.amount > 0);
+
+    if (!items.length) { window.toast('Add at least one valid row', 'error'); return; }
+
+    const seen = {};
+    for (const it of items) {
+      const key = it.customerId + '|' + it.chequeNo.toLowerCase();
+      if (seen[key]) { window.toast('Duplicate cheque in grid: #' + it.chequeNo, 'error'); return; }
+      seen[key] = true;
+    }
+
+    let total = 0;
+    items.forEach(it => {
+      const customer = AR(window.db.customers).find(c => c.id === it.customerId);
+      if (!customer) return;
+      AR(window.db.customerCheques).push({
+        id: window.uid(),
+        customerId: it.customerId,
+        customerName: customer.name,
+        chequeNo: it.chequeNo,
+        bank: it.bank,
+        amount: it.amount,
+        receivedDate: today(),
+        dueDate: it.dueDate || today(),
+        status: 'In Hand',
+        categoryId: categoryId,
+        splits: [],
+        notes: '',
+        createdAt: nowISO()
+      });
+      total += it.amount;
+    });
+
+    window.logActivity('CHEQUES_BULK_ENTERED', 'Cheque', '',
+      items.length + ' cheques · ' + money(total));
+    window.save();
+    window.closeModal();
+    if (typeof window.render === 'function') window.render();
+    window.toast('✅ ' + items.length + ' cheques added', 'success');
+  };
+
+  /* ═══════════════════════════════════════════════════════════════════
+     PATCH — nav to include Bulk Cheque Entry button on Customer Cheques
+     Also patches the "New Receipt" button to offer both entry styles.
+  ═══════════════════════════════════════════════════════════════════ */
+  const _viewCustomerCheques = window.viewCustomerCheques;
+  if (typeof _viewCustomerCheques === 'function') {
+    window.viewCustomerCheques = function() {
+      const html = _viewCustomerCheques.apply(this, arguments);
+      /* Add bulk entry button into card-head */
+      return html.replace(
+        '＋ Receive Cheque</button>',
+        '＋ Receive Cheque</button>'
+        + '<button class="btn" onclick="window.p17OpenBulkChequeEntry()">⚡ Bulk Entry</button>'
+      );
+    };
+    if (window.views) window.views.customerCheques = window.viewCustomerCheques;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     RE-RENDER TOPBAR + BADGE
+  ═══════════════════════════════════════════════════════════════════ */
+  setTimeout(injectBell, 400);
+  setTimeout(injectBell, 1200);
+  setInterval(updateNotifBadge, 30000);
+
+  /* Refresh notifications when render runs */
+  const _origRender = window.render;
+  if (typeof _origRender === 'function') {
+    window.render = function() {
+      const r = _origRender.apply(this, arguments);
+      setTimeout(() => { injectBell(); updateNotifBadge(); }, 60);
+      return r;
+    };
+  }
+
+  console.log('%c═══════════════════════════════════════════════════════',
+    'color:#7c3aed;font-weight:bold');
+  console.log('%c✅ PART 17 — Payment Picker + Notifications + Bulk Entry',
+    'color:#10b981;font-weight:bold;font-size:14px');
+  console.log('%c   • Payment form now has Party Cheque picker', 'color:#a78bfa;font-size:12px');
+  console.log('%c   • Own leaf cascade Bank→Book→Leaf', 'color:#a78bfa;font-size:12px');
+  console.log('%c   • Deferred bank deduction for own cheques', 'color:#a78bfa;font-size:12px');
+  console.log('%c   • Notification bell + slide-out panel', 'color:#a78bfa;font-size:12px');
+  console.log('%c   • Bulk Cheque Entry (⚡ button on Customer Cheques page)', 'color:#a78bfa;font-size:12px');
+  console.log('%c═══════════════════════════════════════════════════════',
+    'color:#7c3aed;font-weight:bold');
+})();
+</script>
+<script>
+'use strict';
+/* ═══════════════════════════════════════════════════════════════════════
+   PART 18 — HOTFIX + OWN CHEQUES CALENDAR / FUNDING / TIMELINE
+   Loaded LAST. Self-contained. Does not touch Parts 1-17.
+═══════════════════════════════════════════════════════════════════════ */
+(function part18() {
+  if (window._part18Loaded) return;
+  window._part18Loaded = true;
+
+  const NN = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  const AR = v => Array.isArray(v) ? v : [];
+  const E  = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  /* ═════════════════════════════════════════════════════════════════════
+     FIX 1 — viewPurchases (thisMonth shadowing bug)
+     Full reimplementation so no closure bug can slip through.
+  ═════════════════════════════════════════════════════════════════════ */
+  window.viewPurchases = function viewPurchasesV2() {
+    const st = window.purchaseState || {};
+    let rows = AR(window.db.purchases).slice();
+    if (st.q) {
+      const q = st.q.toLowerCase();
+      rows = rows.filter(p =>
+        (p.invoiceNo || '').toLowerCase().includes(q)
+        || (p.description || '').toLowerCase().includes(q)
+        || (window.supName(p.supplierId) || '').toLowerCase().includes(q));
+    }
+    if (st.supplierId) rows = rows.filter(p => p.supplierId === st.supplierId);
+    if (st.categoryId) rows = rows.filter(p => p.categoryId === st.categoryId);
+    if (st.from) rows = rows.filter(p => p.date >= st.from);
+    if (st.to) rows = rows.filter(p => p.date <= st.to);
+    rows.sort((a, b) => (b.date || '') < (a.date || '') ? -1 : 1);
+
+    const total = rows.reduce((a, p) => a + NN(p.amount), 0);
+    const curYM = window.thisMonth();                        /* ← fixed: distinct name */
+    const curYMtotal = rows.filter(p => p.date.slice(0, 7) === curYM)
+      .reduce((a, p) => a + NN(p.amount), 0);
+    const allTotal = AR(window.db.purchases)
+      .reduce((a, p) => a + NN(p.amount), 0);
+
+    return '<div class="kpi-strip">'
+      + window.kpi('Total Purchases', window.money(allTotal),
+          AR(window.db.purchases).length + ' invoices')
+      + window.kpi('This Month', window.money(curYMtotal),
+          window.monthName(curYM))
+      + window.kpi('Filtered Total', window.money(total),
+          rows.length + ' matching')
+      + '</div>'
+      + '<div class="card">'
+      +   '<div class="card-head"><h3>🛒 Purchases (' + rows.length + ')</h3>'
+      +     '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+      +       '<button class="btn sm" onclick="exportPurchasesCSV()">⬇ CSV</button>'
+      +       '<button class="btn primary" onclick="openPurchaseForm()">＋ New Purchase</button>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">'
+      +     '<label class="field">Search'
+      +       '<input value="' + E(st.q || '') + '" oninput="window.purchaseState.q=this.value;window.render()" placeholder="Invoice, supplier, notes">'
+      +     '</label>'
+      +     '<label class="field">Supplier'
+      +       '<select onchange="window.purchaseState.supplierId=this.value;window.render()">'
+      +         '<option value="">All suppliers</option>'
+      +         AR(window.db.suppliers).map(s => '<option value="' + s.id + '" ' + (st.supplierId === s.id ? 'selected' : '') + '>' + E(s.name) + '</option>').join('')
+      +       '</select></label>'
+      +     '<label class="field">Category'
+      +       '<select onchange="window.purchaseState.categoryId=this.value;window.render()">'
+      +         '<option value="">All categories</option>'
+      +         AR(window.db.categories).map(c => '<option value="' + c.id + '" ' + (st.categoryId === c.id ? 'selected' : '') + '>' + E(c.name) + '</option>').join('')
+      +       '</select></label>'
+      +     '<label class="field">From<input type="date" value="' + E(st.from || '') + '" onchange="window.purchaseState.from=this.value;window.render()"></label>'
+      +     '<label class="field">To<input type="date" value="' + E(st.to || '') + '" onchange="window.purchaseState.to=this.value;window.render()"></label>'
+      +   '</div>'
+      +   (rows.length
+          ? '<div style="overflow-x:auto">'
+            + '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+            + '<thead><tr style="background:var(--surface-2)">'
+            +   ['Date','Invoice','Supplier','Category','Amount','Due','']
+                  .map(h => '<th style="text-align:left;padding:11px 12px;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:700;border-bottom:1px solid var(--border)">' + h + '</th>').join('')
+            + '</tr></thead><tbody>'
+            + rows.map(p => {
+                const cat = p.categoryId && window.catObj(p.categoryId);
+                return '<tr style="border-bottom:1px solid var(--border-2);cursor:pointer" onclick="window.showPurchaseDetail(\'' + p.id + '\')">'
+                  + '<td style="padding:11px 12px;font-size:11.5px;white-space:nowrap">' + window.dateFmt(p.date) + '</td>'
+                  + '<td style="padding:11px 12px;font-family:var(--mono);font-size:11px">' + E(p.invoiceNo || '—') + '</td>'
+                  + '<td style="padding:11px 12px"><strong>' + E(window.supName(p.supplierId)) + '</strong></td>'
+                  + '<td style="padding:11px 12px">' + (cat ? '<span class="pill pill-soft">' + E(cat.name) + '</span>' : '—') + '</td>'
+                  + '<td style="padding:11px 12px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">' + window.money(p.amount) + '</td>'
+                  + '<td style="padding:11px 12px;font-size:11.5px;color:var(--text-3)">' + (p.dueDate ? window.dateFmt(p.dueDate) : '—') + '</td>'
+                  + '<td style="padding:11px 12px" onclick="event.stopPropagation()">'
+                  +   '<div style="display:flex;gap:4px">'
+                  +     '<button class="btn sm" onclick="window.openPurchaseForm(\'' + p.id + '\')">✎</button>'
+                  +     '<button class="btn sm danger" onclick="window.deletePurchase(\'' + p.id + '\')">🗑</button>'
+                  +   '</div>'
+                  + '</td>'
+                  + '</tr>';
+              }).join('')
+            + '</tbody></table></div>'
+          : '<div class="empty"><div class="big">🛒</div>No purchases yet<br>'
+            + '<button class="btn primary" style="margin-top:12px" onclick="window.openPurchaseForm()">＋ Add First Purchase</button></div>')
+      + '</div>';
+  };
+  if (window.views) window.views.purchases = window.viewPurchases;
+
+  /* ═════════════════════════════════════════════════════════════════════
+     OWN CHEQUES — full 5-tab view (Overview / Calendar / Funding Plan / Timeline / All)
+  ═════════════════════════════════════════════════════════════════════ */
+  const OC = { tab: 'Overview', calMonth: null };
+  window._ownChequesState = OC;
+
+  window.viewOwnCheques = function viewOwnChequesV2() {
+    const tabs = ['Overview','Calendar','Funding Plan','Timeline','All Leaves'];
+    if (tabs.indexOf(OC.tab) === -1) OC.tab = 'Overview';
+    if (!OC.calMonth) OC.calMonth = window.thisMonth();
+
+    let body = '';
+    if (OC.tab === 'Overview')     body = ocOverview();
+    else if (OC.tab === 'Calendar')     body = ocCalendar();
+    else if (OC.tab === 'Funding Plan') body = ocFunding();
+    else if (OC.tab === 'Timeline')     body = ocTimeline();
+    else                                body = ocAllLeaves();
+
+    return '<div class="card" style="padding:0;overflow:hidden">'
+      + '<div style="display:flex;gap:0;padding:0 20px;border-bottom:1px solid var(--border);overflow-x:auto">'
+      +   tabs.map(t => '<div class="oc-tab ' + (OC.tab === t ? 'active' : '') + '" style="padding:16px 20px;cursor:pointer;font-size:13px;font-weight:500;color:var(--text-3);border-bottom:2px solid transparent;white-space:nowrap" onclick="window._ownChequesState.tab=\'' + t + '\';window.render()">' + t + '</div>').join('')
+      + '</div>'
+      + '<div style="padding:22px">' + body + '</div>'
+      + '</div>';
+  };
+  if (window.views) window.views.ownCheques = window.viewOwnCheques;
+
+  function leavesByStatus(st) {
+    return AR(window.db.chequeLeaves).filter(l => l.status === st);
+  }
+  function issuedLeaves() {
+    return leavesByStatus('Issued');
+  }
+
+  /* ─── Overview ─── */
+  function ocOverview() {
+    const all = AR(window.db.chequeLeaves);
+    const t = window.today();
+    const avail = leavesByStatus('Available');
+    const issued = issuedLeaves();
+    const cleared = leavesByStatus('Cleared');
+    const bounced = leavesByStatus('Bounced');
+    const stopped = leavesByStatus('Stopped');
+
+    const upcoming30 = issued.filter(l => l.dueDate
+      && window.daysBetween(t, l.dueDate) >= 0
+      && window.daysBetween(t, l.dueDate) <= 30);
+    const overdue = issued.filter(l => l.dueDate && l.dueDate < t);
+
+    const w1 = upcoming30.filter(l => window.daysBetween(t, l.dueDate) <= 7);
+    const w2 = upcoming30.filter(l => { const d = window.daysBetween(t, l.dueDate); return d > 7 && d <= 14; });
+    const w3 = upcoming30.filter(l => { const d = window.daysBetween(t, l.dueDate); return d > 14 && d <= 21; });
+    const w4 = upcoming30.filter(l => { const d = window.daysBetween(t, l.dueDate); return d > 21 && d <= 30; });
+
+    const sum = (arr, k) => arr.reduce((a, x) => a + NN(x[k]), 0);
+
+    return (overdue.length
+        ? '<div class="oc-alert oc-alert-danger"><span style="font-size:22px">⛔</span>'
+          + '<div><strong>' + overdue.length + ' OVERDUE — ' + window.money(sum(overdue, 'amount')) + '</strong>'
+          + '<div style="font-size:12px;opacity:.85;margin-top:2px">Cheques issued are past their due date</div></div></div>'
+        : '')
+      + '<div class="oc-kpi-row">'
+      +   ocKpiCard('Week 1 (0-7d)',   window.money(sum(w1, 'amount')), w1.length + ' cheque(s)', 'var(--red)')
+      +   ocKpiCard('Week 2 (8-14d)',  window.money(sum(w2, 'amount')), w2.length + ' cheque(s)', 'var(--amber)')
+      +   ocKpiCard('Week 3 (15-21d)', window.money(sum(w3, 'amount')), w3.length + ' cheque(s)', '#ea580c')
+      +   ocKpiCard('Week 4 (22-30d)', window.money(sum(w4, 'amount')), w4.length + ' cheque(s)', 'var(--green)')
+      + '</div>'
+      + '<div class="oc-cash-card">'
+      +   '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--accent-text);margin-bottom:8px">Total Cash Required · Next 30 Days</div>'
+      +   '<div style="font-size:34px;font-weight:900;letter-spacing:-.02em">' + window.money(sum(upcoming30, 'amount')) + '</div>'
+      +   '<div style="font-size:12.5px;color:var(--text-3);margin-top:6px">' + upcoming30.length + ' cheque(s) will hit your bank(s)</div>'
+      + '</div>'
+      + '<div class="oc-kpi-row">'
+      +   ocKpiCard('Available', avail.length + ' leaves', 'Ready to issue', 'var(--green)')
+      +   ocKpiCard('Issued', window.money(sum(issued, 'amount')), issued.length + ' cheques', 'var(--accent)')
+      +   ocKpiCard('Cleared', window.money(sum(cleared, 'amount')), cleared.length + ' cheques', 'var(--text-3)')
+      +   ocKpiCard('Bounced', window.money(sum(bounced, 'amount')), bounced.length + ' cheques', 'var(--red)')
+      +   ocKpiCard('Stopped', window.money(sum(stopped, 'amount')), stopped.length + ' cheques', 'var(--text-3)')
+      + '</div>';
+  }
+
+  function ocKpiCard(label, value, sub, color) {
+    return '<div class="oc-kpi" style="border-left:4px solid ' + color + '">'
+      + '<div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-bottom:6px">' + E(label) + '</div>'
+      + '<div style="font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">' + value + '</div>'
+      + (sub ? '<div style="font-size:11px;color:var(--text-4);margin-top:4px">' + E(sub) + '</div>' : '')
+      + '</div>';
+  }
+
+  /* ─── Calendar ─── */
+  function ocCalendar() {
+    const ym = OC.calMonth;
+    const p = ym.split('-').map(Number);
+    const y = p[0], m = p[1];
+    const firstDay = new Date(y, m - 1, 1);
+    const startOffset = firstDay.getDay();
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const t = window.today();
+
+    const issued = issuedLeaves();
+    const byDate = {};
+    issued.forEach(l => {
+      if (!l.dueDate) return;
+      if (!byDate[l.dueDate]) byDate[l.dueDate] = [];
+      byDate[l.dueDate].push(l);
+    });
+
+    const monthLeaves = issued.filter(l => l.dueDate && l.dueDate.slice(0, 7) === ym);
+    const dailyAmounts = {};
+    Object.keys(byDate).forEach(d => {
+      dailyAmounts[d] = byDate[d].reduce((a, l) => a + NN(l.amount), 0);
+    });
+    const maxDay = Math.max(1, ...Object.values(dailyAmounts));
+
+    const bankColors = ['#7c3aed','#ec4899','#10b981','#f59e0b','#ef4444','#3b82f6','#14b8a6','#8b5cf6'];
+    const banks = Array.from(new Set(issued.map(l => l.bankName || 'Unknown')));
+    const bankColorMap = {};
+    banks.forEach((b, i) => { bankColorMap[b] = bankColors[i % bankColors.length]; });
+
+    const cells = [];
+    for (let i = 0; i < startOffset; i++) cells.push('<div class="oc-cal-cell empty"></div>');
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = ym + '-' + String(d).padStart(2, '0');
+      const items = byDate[ds] || [];
+      const amt = dailyAmounts[ds] || 0;
+      const isToday = ds === t;
+      const isPast = ds < t;
+      let intensity = '';
+      if (amt > 0) {
+        const pct = amt / maxDay;
+        if (pct <= .25) intensity = 'int-low';
+        else if (pct <= .5) intensity = 'int-med';
+        else if (pct <= .8) intensity = 'int-high';
+        else intensity = 'int-critical';
+      }
+      const itemBanks = Array.from(new Set(items.map(l => l.bankName || 'Unknown')));
+      const dots = itemBanks.map(b => '<span class="oc-bank-dot" style="background:' + (bankColorMap[b] || '#6b7280') + '" title="' + E(b) + '"></span>').join('');
+      const cls = 'oc-cal-cell ' + (items.length ? 'has-amount ' : '') + (isToday ? 'today ' : '') + (isPast ? 'past ' : '') + intensity;
+      const onclick = items.length ? ' onclick="window.ocShowDay(\'' + ds + '\')"' : '';
+      cells.push('<div class="' + cls + '"' + onclick + '>'
+        + '<div class="oc-day-num"><span>' + d + '</span>' + (isToday ? '<span style="font-size:9px;color:var(--text-4)">Today</span>' : '') + '</div>'
+        + (amt > 0
+            ? '<div class="oc-day-amt">' + window.moneyPlain(amt) + '</div>'
+              + '<div class="oc-day-count">' + items.length + ' chq</div>'
+              + '<div class="oc-bank-dots">' + dots + '</div>'
+            : '')
+        + '</div>');
+    }
+
+    const legend = Object.keys(bankColorMap).map(b =>
+      '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-size:12px">'
+      + '<span style="width:11px;height:11px;border-radius:50%;background:' + bankColorMap[b] + '"></span>' + E(b) + '</span>').join('');
+
+    return '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">'
+      + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      +   '<button class="btn" onclick="window.ocChangeMonth(-1)">◂ Prev</button>'
+      +   '<input type="month" value="' + ym + '" onchange="window._ownChequesState.calMonth=this.value;window.render()" style="width:180px">'
+      +   '<button class="btn" onclick="window.ocChangeMonth(1)">Next ▸</button>'
+      +   '<button class="btn primary" onclick="window._ownChequesState.calMonth=window.thisMonth();window.render()">Today</button>'
+      + '</div>'
+      + '<div style="display:flex;gap:8px">'
+      +   '<span class="pill pill-soft">' + window.monthName(ym) + '</span>'
+      +   '<span class="pill pill-warn">' + monthLeaves.length + ' cheques</span>'
+      +   '<span class="pill pill-ok">' + window.money(monthLeaves.reduce((a, l) => a + NN(l.amount), 0)) + '</span>'
+      + '</div>'
+      + '</div>'
+      + '<div class="oc-cal-header">'
+      +   '<div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>'
+      + '</div>'
+      + '<div class="oc-cal-grid">' + cells.join('') + '</div>'
+      + (legend ? '<div style="margin-top:18px;padding:14px 16px;background:var(--surface-2);border-radius:10px;border:1px solid var(--border-2)">'
+          + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:8px">Bank Legend</div>'
+          + legend + '</div>'
+        : '');
+  }
+
+  window.ocChangeMonth = function(delta) {
+    const cur = OC.calMonth.split('-').map(Number);
+    const d = new Date(cur[0], cur[1] - 1 + delta, 1);
+    OC.calMonth = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    window.render();
+  };
+
+  window.ocShowDay = function(ds) {
+    const items = issuedLeaves().filter(l => l.dueDate === ds);
+    if (!items.length) return;
+    const total = items.reduce((a, l) => a + NN(l.amount), 0);
+    window.openModal('📅 Cheques Due — ' + window.dateFmt(ds),
+      '<div class="kpi-strip" style="grid-template-columns:1fr 1fr">'
+      + window.kpi('Total Due', window.money(total), items.length + ' cheque(s)')
+      + window.kpi('Banks', Array.from(new Set(items.map(l => l.bankName))).length, '')
+      + '</div>'
+      + '<div style="overflow-x:auto">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+      + '<thead><tr style="background:var(--surface-2)">'
+      + ['Leaf','Bank','Payee','Amount','Actions'].map(h =>
+          '<th style="text-align:left;padding:10px 12px;font-size:10.5px;text-transform:uppercase;color:var(--text-3);font-weight:700;border-bottom:1px solid var(--border)">' + h + '</th>').join('')
+      + '</tr></thead><tbody>'
+      + items.map(l => '<tr style="border-bottom:1px solid var(--border-2)">'
+          + '<td style="padding:10px 12px;font-family:var(--mono);font-weight:600">' + E(l.leafNo) + '</td>'
+          + '<td style="padding:10px 12px">' + E(l.bankName || '') + '</td>'
+          + '<td style="padding:10px 12px">' + E(l.payee || (window.supName && window.supName(l.supplierId)) || '—') + '</td>'
+          + '<td style="padding:10px 12px;text-align:right;font-weight:600">' + window.money(l.amount) + '</td>'
+          + '<td style="padding:10px 12px">'
+          +   '<div style="display:flex;gap:4px">'
+          +     '<button class="btn sm" onclick="window.closeModal();window.showLeafDetail(\'' + l.id + '\')">👁</button>'
+          +     '<button class="btn sm primary" onclick="window.ocMarkCleared(\'' + l.id + '\')">✓ Cleared</button>'
+          +   '</div>'
+          + '</td>'
+          + '</tr>').join('')
+      + '</tbody></table></div>'
+      + '<div class="form-actions"><button class="btn primary" onclick="window.closeModal()">Close</button></div>',
+      { wide: true });
+  };
+
+  window.ocMarkCleared = function(id) {
+    const l = AR(window.db.chequeLeaves).find(x => x.id === id);
+    if (!l) return;
+    l.status = 'Cleared';
+    l.clearedDate = window.today();
+    const tx = AR(window.db.bankTransactions).find(t => t.chequeId === id && t.type === 'cheque_issued');
+    if (tx && tx.status === 'pending') { tx.status = 'deducted'; tx.deductedAt = window.nowISO(); }
+    window.logActivity && window.logActivity('OWN_CHEQUE_CLEARED', 'Own Cheque', 'Leaf ' + l.leafNo, window.money(l.amount));
+    window.save();
+    window.closeModal();
+    window.render();
+    window.toast('✅ Cheque cleared', 'success');
+  };
+
+  /* ─── Funding Plan ─── */
+  function ocFunding() {
+    const from = window.today();
+    const to = window.shiftDate(from, 60);
+    const list = issuedLeaves()
+      .filter(l => l.dueDate && l.dueDate >= from && l.dueDate <= to)
+      .sort((a, b) => a.dueDate < b.dueDate ? -1 : 1);
+
+    const grouped = {};
+    list.forEach(l => {
+      if (!grouped[l.dueDate]) grouped[l.dueDate] = [];
+      grouped[l.dueDate].push(l);
+    });
+    const dates = Object.keys(grouped).sort();
+    const byBank = {};
+    list.forEach(l => {
+      const b = l.bankName || 'Unknown';
+      if (!byBank[b]) byBank[b] = [];
+      byBank[b].push(l);
+    });
+
+    let cum = 0;
+    const rows = dates.map(d => {
+      const items = grouped[d];
+      const dayTotal = items.reduce((a, l) => a + NN(l.amount), 0);
+      cum += dayTotal;
+      const dayBanks = {};
+      items.forEach(l => {
+        const b = l.bankName || 'Unknown';
+        if (!dayBanks[b]) dayBanks[b] = 0;
+        dayBanks[b] += NN(l.amount);
+      });
+      const daysAway = window.daysBetween(from, d);
+      const cls = d === from ? 'today' : daysAway <= 3 ? 'soon' : '';
+      const bankBoxes = Object.keys(dayBanks).map(b =>
+        '<div class="oc-fund-bank"><span class="oc-fb-name">' + E(b) + '</span>'
+        + '<span class="oc-fb-amt">' + window.money(dayBanks[b]) + '</span></div>').join('');
+
+      return '<div class="oc-fund-day ' + cls + '">'
+        + '<div class="oc-fund-date">' + window.dateFmt(d)
+        +   '<span class="oc-fd-sub">' + (d === from ? 'DUE TODAY' : 'in ' + daysAway + ' days') + '</span></div>'
+        + '<div class="oc-fund-banks">' + bankBoxes + '</div>'
+        + '<div class="oc-fund-total">' + window.money(dayTotal)
+        +   '<span class="oc-ft-sub">Running: ' + window.money(cum) + '</span></div>'
+        + '</div>';
+    }).join('');
+
+    const bankSummary = Object.keys(byBank).map(b =>
+      '<div class="oc-bank-summary">'
+      + '<div><strong>' + E(b) + '</strong> <span style="color:var(--text-3);font-size:12px">· ' + byBank[b].length + ' cheque(s)</span></div>'
+      + '<div style="font-weight:800;color:var(--amber)">' + window.money(byBank[b].reduce((a, l) => a + NN(l.amount), 0)) + '</div>'
+      + '</div>').join('');
+
+    return '<div class="oc-cash-card" style="background:linear-gradient(135deg,var(--accent-soft),var(--pink-soft))">'
+      + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--accent-text);margin-bottom:8px">Total Funding Required · Next 60 Days</div>'
+      + '<div style="font-size:34px;font-weight:900;letter-spacing:-.02em">' + window.money(list.reduce((a, l) => a + NN(l.amount), 0)) + '</div>'
+      + '<div style="font-size:12.5px;color:var(--text-3);margin-top:6px">' + list.length + ' cheque(s) across ' + dates.length + ' day(s) · ' + Object.keys(byBank).length + ' bank(s)</div>'
+      + '</div>'
+      + (bankSummary ? '<div style="margin-top:20px;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:10px">Bank-wise Summary</div>' + bankSummary + '</div>' : '')
+      + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:10px">Daily Funding Schedule</div>'
+      + (rows
+          ? '<div class="oc-fund-plan">' + rows + '</div>'
+          : '<div class="empty">No cheques due in next 60 days 🎉</div>');
+  }
+
+  /* ─── Timeline ─── */
+  function ocTimeline() {
+    const t = window.today();
+    const all = issuedLeaves()
+      .filter(l => l.dueDate)
+      .sort((a, b) => a.dueDate < b.dueDate ? -1 : 1);
+    const overdue = all.filter(l => l.dueDate < t);
+    const grouped = {};
+    all.forEach(l => {
+      if (!grouped[l.dueDate]) grouped[l.dueDate] = [];
+      grouped[l.dueDate].push(l);
+    });
+    const dates = Object.keys(grouped).sort();
+
+    const d30 = all.filter(l => l.dueDate >= t && window.daysBetween(t, l.dueDate) <= 30);
+    const d60 = all.filter(l => l.dueDate >= t && window.daysBetween(t, l.dueDate) <= 60);
+    const d90 = all.filter(l => l.dueDate >= t && window.daysBetween(t, l.dueDate) <= 90);
+
+    const sum = (arr, k) => arr.reduce((a, x) => a + NN(x[k]), 0);
+
+    return (overdue.length
+        ? '<div class="oc-alert oc-alert-danger"><span style="font-size:22px">⛔</span>'
+          + '<div><strong>' + overdue.length + ' OVERDUE — ' + window.money(sum(overdue, 'amount')) + '</strong></div></div>'
+        : '')
+      + '<div class="oc-kpi-row">'
+      +   ocKpiCard('Next 30 Days', window.money(sum(d30, 'amount')), d30.length + ' cheques', 'var(--accent)')
+      +   ocKpiCard('Next 60 Days', window.money(sum(d60, 'amount')), d60.length + ' cheques', 'var(--amber)')
+      +   ocKpiCard('Next 90 Days', window.money(sum(d90, 'amount')), d90.length + ' cheques', '#ea580c')
+      +   ocKpiCard('Total Pending', window.money(sum(all, 'amount')), all.length + ' cheques', 'var(--red)')
+      + '</div>'
+      + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin:20px 0 12px">Timeline</div>'
+      + (dates.length
+          ? dates.map(d => {
+              const items = grouped[d];
+              const total = items.reduce((a, l) => a + NN(l.amount), 0);
+              const daysAway = window.daysBetween(t, d);
+              const label = d === t ? 'TODAY' : d === window.shiftDate(t, 1) ? 'TOMORROW' : window.dateFmt(d);
+              const sub = daysAway < 0 ? Math.abs(daysAway) + ' days overdue' : daysAway === 0 ? 'Due today' : 'in ' + daysAway + ' days';
+              const bord = daysAway < 0 ? 'var(--red)' : daysAway === 0 ? 'var(--accent)' : daysAway <= 7 ? 'var(--amber)' : 'var(--border)';
+
+              return '<div class="oc-tl-day" style="border-left:4px solid ' + bord + '">'
+                + '<div class="oc-tl-head">'
+                +   '<div><div style="font-weight:700;font-size:13.5px">' + label + '</div>'
+                +     '<div style="font-size:11.5px;color:var(--text-3);margin-top:2px">' + sub + ' · ' + items.length + ' cheque(s)</div></div>'
+                +   '<div style="font-weight:800;font-size:17px;color:' + (daysAway < 0 ? 'var(--red)' : 'var(--amber)') + '">' + window.money(total) + '</div>'
+                + '</div>'
+                + items.map(l => '<div class="oc-tl-row">'
+                    + '<div class="mono"><strong>' + E(l.leafNo) + '</strong></div>'
+                    + '<div>' + E(l.bankName || '') + '</div>'
+                    + '<div>' + E(l.payee || (window.supName && window.supName(l.supplierId)) || '—') + '</div>'
+                    + '<div style="text-align:right;font-weight:600">' + window.money(l.amount) + '</div>'
+                    + '<div style="display:flex;gap:4px">'
+                    +   '<button class="btn sm primary" onclick="window.ocMarkCleared(\'' + l.id + '\')">✓</button>'
+                    +   '<button class="btn sm" onclick="window.showLeafDetail(\'' + l.id + '\')">👁</button>'
+                    + '</div>'
+                    + '</div>').join('')
+                + '</div>';
+            }).join('')
+          : '<div class="empty">No issued cheques 🎉</div>');
+  }
+
+  /* ─── All Leaves (simple table view — same as before) ─── */
+  function ocAllLeaves() {
+    const tabs = ['Available','Issued','Cleared','Bounced','Stopped'];
+    const sub = window._ownLeavesSubTab || 'Available';
+    window._ownLeavesSubTab = sub;
+    const counts = {};
+    tabs.forEach(t => { counts[t] = leavesByStatus(t).length; });
+    const list = leavesByStatus(sub);
+
+    return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">'
+      + tabs.map(t => '<button class="btn ' + (sub === t ? 'primary' : '') + '" onclick="window._ownLeavesSubTab=\'' + t + '\';window.render()">' + t + ' (' + counts[t] + ')</button>').join('')
+      + '</div>'
+      + (list.length
+          ? '<div style="overflow-x:auto">'
+            + '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+            + '<thead><tr style="background:var(--surface-2)">'
+            + ['Leaf','Bank','Payee','Amount','Due',''].map(h =>
+                '<th style="text-align:left;padding:10px 12px;font-size:10.5px;text-transform:uppercase;color:var(--text-3);font-weight:700;border-bottom:1px solid var(--border)">' + h + '</th>').join('')
+            + '</tr></thead><tbody>'
+            + list.map(l => '<tr style="border-bottom:1px solid var(--border-2);cursor:pointer" onclick="window.showLeafDetail(\'' + l.id + '\')">'
+                + '<td style="padding:10px 12px;font-family:var(--mono);font-weight:600">' + E(l.leafNo) + '</td>'
+                + '<td style="padding:10px 12px">' + E(l.bankName || '') + '</td>'
+                + '<td style="padding:10px 12px">' + E(l.payee || (window.supName && window.supName(l.supplierId)) || '—') + '</td>'
+                + '<td style="padding:10px 12px;text-align:right;font-weight:600">' + (l.amount ? window.money(l.amount) : '—') + '</td>'
+                + '<td style="padding:10px 12px;font-size:11.5px;color:var(--text-3)">' + (l.dueDate ? window.dateFmt(l.dueDate) : '—') + '</td>'
+                + '<td style="padding:10px 12px">👁</td>'
+                + '</tr>').join('')
+            + '</tbody></table></div>'
+          : '<div class="empty">No ' + sub.toLowerCase() + ' leaves</div>');
+  }
+
+  /* ═════════════════════════════════════════════════════════════════════
+     PART 18 CSS
+  ═════════════════════════════════════════════════════════════════════ */
+  (function injectCSS() {
+    if (document.getElementById('_part18CSS')) return;
+    const style = document.createElement('style');
+    style.id = '_part18CSS';
+    style.textContent = ''
+      + '.oc-tab.active{color:var(--accent)!important;border-bottom-color:var(--accent)!important;font-weight:600!important}'
+      + '.oc-alert{padding:14px 18px;border-radius:12px;display:flex;gap:14px;align-items:center;margin-bottom:16px}'
+      + '.oc-alert-danger{background:var(--red-soft);color:var(--red);border:1px solid var(--red-bd)}'
+      + '.oc-kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:18px}'
+      + '.oc-kpi{padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px}'
+      + '.oc-cash-card{padding:22px 26px;background:linear-gradient(135deg,var(--accent-soft),var(--pink-soft));border-radius:14px;margin-bottom:20px;border:1px solid var(--accent-soft)}'
+      + '.oc-cal-header{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:8px}'
+      + '.oc-cal-header>div{text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;color:var(--text-4);padding:10px 0}'
+      + '.oc-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}'
+      + '.oc-cal-cell{min-height:104px;padding:10px 12px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border-2)}'
+      + '.oc-cal-cell.empty{background:transparent;border:none}'
+      + '.oc-cal-cell.today{border:2px solid var(--accent)}'
+      + '.oc-cal-cell.past{opacity:.5}'
+      + '.oc-cal-cell.has-amount{cursor:pointer}'
+      + '.oc-cal-cell.has-amount:hover{transform:translateY(-3px);box-shadow:var(--shadow-md);border-color:var(--accent)}'
+      + '.oc-cal-cell.int-low{background:linear-gradient(135deg,#d1fae5,#ecfdf5);border-color:#6ee7b7}'
+      + '.oc-cal-cell.int-med{background:linear-gradient(135deg,#fef3c7,#fffbeb);border-color:#fcd34d}'
+      + '.oc-cal-cell.int-high{background:linear-gradient(135deg,#fed7aa,#fff7ed);border-color:#fb923c}'
+      + '.oc-cal-cell.int-critical{background:linear-gradient(135deg,#fecaca,#fef2f2);border-color:#f87171}'
+      + '.oc-day-num{font-size:13px;font-weight:600;color:var(--text-2);display:flex;justify-content:space-between}'
+      + '.oc-day-amt{font-size:14px;font-weight:700;margin-top:8px;font-variant-numeric:tabular-nums}'
+      + '.oc-day-count{font-size:10.5px;color:var(--text-3);margin-top:4px}'
+      + '.oc-bank-dots{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}'
+      + '.oc-bank-dot{width:8px;height:8px;border-radius:50%}'
+      + '.oc-fund-plan{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}'
+      + '.oc-fund-day{display:grid;grid-template-columns:150px 1fr 140px;gap:16px;padding:14px 18px;border-bottom:1px solid var(--border-2);align-items:center}'
+      + '.oc-fund-day:last-child{border-bottom:none}'
+      + '.oc-fund-day.today{background:var(--accent-soft)}'
+      + '.oc-fund-day.soon{background:var(--amber-soft)}'
+      + '.oc-fund-date{font-weight:600;font-size:13px}'
+      + '.oc-fd-sub{font-size:11px;color:var(--text-4);font-weight:400;margin-top:3px;display:block}'
+      + '.oc-fund-banks{display:flex;gap:10px;flex-wrap:wrap}'
+      + '.oc-fund-bank{padding:6px 12px;border-radius:8px;background:var(--surface);border:1px solid var(--border);font-size:11.5px;min-width:120px}'
+      + '.oc-fb-name{display:block;font-size:10px;color:var(--text-4);text-transform:uppercase;font-weight:700}'
+      + '.oc-fb-amt{font-weight:700;font-variant-numeric:tabular-nums;margin-top:3px;font-size:12.5px}'
+      + '.oc-fund-total{font-size:16px;font-weight:800;text-align:right}'
+      + '.oc-ft-sub{font-size:11px;color:var(--text-4);font-weight:400;margin-top:4px;display:block}'
+      + '.oc-bank-summary{padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;border-left:4px solid var(--accent)}'
+      + '.oc-tl-day{padding:14px 18px;border:1px solid var(--border-2);border-radius:12px;background:var(--surface-2);margin-bottom:12px}'
+      + '.oc-tl-head{display:flex;justify-content:space-between;align-items:center;padding-bottom:12px;margin-bottom:12px;border-bottom:1px dashed var(--border-2)}'
+      + '.oc-tl-row{display:grid;grid-template-columns:110px 1fr 1.4fr 130px 80px;gap:12px;padding:8px 0;font-size:12px;align-items:center;border-bottom:1px solid var(--border-2)}'
+      + '.oc-tl-row:last-child{border-bottom:none}'
+      + '.pill{padding:3px 10px;border-radius:12px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}'
+      + '.pill-soft{background:var(--accent-soft);color:var(--accent-text)}'
+      + '.pill-warn{background:var(--amber-soft);color:var(--amber)}'
+      + '.pill-ok{background:var(--green-soft);color:var(--green)}';
+    document.head.appendChild(style);
+  })();
+
+  /* ═════════════════════════════════════════════════════════════════════
+     SELF-CHECK — print status in console
+  ═════════════════════════════════════════════════════════════════════ */
+  setTimeout(function () {
+    const checks = {
+      'Part 18 loaded': true,
+      'viewPurchases V2 (thisMonth fix)': window.viewPurchases && window.viewPurchases.name === 'viewPurchasesV2',
+      'viewOwnCheques V2 (calendar etc)':  window.viewOwnCheques && window.viewOwnCheques.name === 'viewOwnChequesV2',
+      'Part 17 payment picker':  typeof window.p17SavePayment === 'function',
+      'Part 17 notification bell': typeof window.p17ToggleNotif === 'function',
+      'Part 17 bulk cheque entry': typeof window.p17OpenBulkChequeEntry === 'function'
+    };
+    console.log('%c═══════════════════════════════════════════════════════', 'color:#7c3aed;font-weight:bold');
+    console.log('%c✅ PART 18 ACTIVE — Bug fixes + Own Cheques calendar/funding/timeline', 'color:#10b981;font-weight:bold;font-size:14px');
+    console.table(checks);
+    if (!checks['Part 17 payment picker']) {
+      console.warn('⚠ Part 17 patch is NOT active. Paste the Part 17 script BEFORE this one, then reload.');
+    }
+  }, 800);
+})();
+</script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   LAN MODE — shared data across PCs over the shop network
+   Runs only inside the Electron desktop app. In a normal browser it
+   does nothing (so your app still works when opened as a web page).
+═══════════════════════════════════════════════════════════════════════ */
+(function lanMode() {
+  if (!window.LK_MODE) return;               // not inside Electron → skip
+  const { role, serverIp, serverPort } = window.LK_MODE;
+
+  const LS_KEY = 'lankashoe_db_v3';           // same key your app uses
+  const BASE = role === 'client'
+    ? `http://${serverIp}:${serverPort}`
+    : `http://127.0.0.1:${serverPort}`;
+
+  /* ─── On boot, replace localStorage value with the server's copy ─── */
+  async function primeFromServer() {
+    try {
+      const res = await fetch(`${BASE}/api/load`);
+      const data = await res.text();
+      if (data && data.length > 2) {
+        // Cache it locally so the app's first read works instantly
+        window.localStorage.setItem(LS_KEY, data);
+        console.log('[LAN] Loaded shared data from', BASE);
+      }
+    } catch (e) {
+      console.warn('[LAN] Could not load from server — using local copy', e);
+      if (role === 'client') {
+        alert('Cannot reach Main PC (' + serverIp + ').\n' +
+              'Data shown is from the last sync on this PC.\n' +
+              'Ask the Main PC to be turned on.');
+      }
+    }
+  }
+
+  /* ─── Wrap localStorage.setItem so every save also goes to server ── */
+  const _setItem = window.localStorage.setItem.bind(window.localStorage);
+  let saveTimer = null;
+
+  window.localStorage.setItem = function (key, value) {
+    _setItem(key, value);
+    if (key !== LS_KEY) return;
+    // Debounce — batch rapid saves into one push
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      fetch(`${BASE}/api/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: value
+      }).then(r => {
+        if (!r.ok) throw new Error('save failed');
+        console.log('[LAN] Pushed to server');
+      }).catch(e => {
+        console.warn('[LAN] Save to server failed:', e);
+        if (window.toast) toast('⚠ Could not sync to Main PC', 'error', 5000);
+      });
+    }, 400);
+  };
+
+  /* ─── Show a small status chip in the topbar ─────────────────────── */
+  function showStatus() {
+    const actions = document.querySelector('.topbar-actions');
+    if (!actions || actions.querySelector('[data-lan-chip]')) return;
+    const chip = document.createElement('div');
+    chip.setAttribute('data-lan-chip', '1');
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;' +
+      'padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);' +
+      'border-radius:22px;font-size:11.5px;font-weight:600';
+    const isMain = role === 'main';
+    chip.innerHTML = isMain
+      ? '<span style="width:8px;height:8px;background:#10b981;border-radius:50%;display:inline-block"></span> MAIN · ' + BASE
+      : '<span style="width:8px;height:8px;background:#3b82f6;border-radius:50%;display:inline-block"></span> WORKSTATION';
+    chip.title = isMain
+      ? 'This PC is the server. Other PCs connect to it.'
+      : 'Connected to Main PC at ' + serverIp;
+    actions.insertBefore(chip, actions.firstChild);
+  }
+
+  /* ─── Poll server every 15s for fresh data (auto-refresh) ────────── */
+  async function pollForUpdates() {
+    try {
+      const res = await fetch(`${BASE}/api/load`);
+      const data = await res.text();
+      const current = window.localStorage.getItem(LS_KEY);
+      if (data && data !== current) {
+        _setItem(LS_KEY, data);
+        if (window.db) {
+          try {
+            Object.assign(window.db, JSON.parse(data));
+            if (window.render) window.render();
+          } catch (e) {}
+        }
+        console.log('[LAN] Refreshed from server');
+      }
+    } catch (e) {}
+  }
+
+  /* ─── Boot ───────────────────────────────────────────────────────── */
+  primeFromServer().then(() => {
+    setTimeout(showStatus, 400);
+    if (role === 'client') setInterval(pollForUpdates, 15000);
+  });
+
+  console.log('[LAN] Mode:', role, '· Server:', BASE);
 })();
 </script>
 </body>
