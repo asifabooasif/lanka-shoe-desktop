@@ -25,15 +25,13 @@
     "productName": "Lanka Shoe Enterprise",
     "copyright": "Copyright © 2026 Lanka Shoe",
     "directories": {
-      "output": "dist",
-      "buildResources": "build"
+      "output": "dist"
     },
     "files": [
       "main.js",
       "preload.js",
       "app/**/*",
-      "setup/**/*",
-      "build/icon.png"
+      "setup/**/*"
     ],
     "win": {
       "target": [
@@ -42,7 +40,6 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "build/icon.ico",
       "publisherName": "Lanka Shoe"
     },
     "nsis": {
@@ -53,11 +50,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Lanka Shoe",
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
-      "deleteAppDataOnUninstall": false,
-      "license": "build/license.txt"
+      "deleteAppDataOnUninstall": false
     }
   }
 }
