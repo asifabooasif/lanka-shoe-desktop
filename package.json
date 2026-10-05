@@ -1,0 +1,76 @@
+{
+  "name": "lanka-shoe",
+  "productName": "Lanka Shoe",
+  "version": "1.0.0",
+  "description": "Lanka Shoe — Shop Management System with LAN multi-PC support",
+  "main": "main.js",
+  "author": {
+    "name": "Asif Aboo Asif",
+    "email": "asifabooasif@gmail.com"
+  },
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:main": "electron . --mode=main",
+    "start:client": "electron . --mode=client --server=127.0.0.1",
+    "dev": "electron . --dev",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win --x64",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux",
+    "dist:all": "electron-builder -mwl"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.lankashoe.app",
+    "productName": "Lanka Shoe",
+    "copyright": "Copyright © 2026 Asif Aboo Asif",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "server.js",
+      "setup.html",
+      "index.html",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "main.js"
+    },
+    "win": {
+      "target": [
+        { "target": "portable", "arch": ["x64"] },
+        { "target": "nsis",     "arch": ["x64"] },
+        { "target": "zip",      "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Lanka Shoe"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.business"
+    },
+    "linux": {
+      "target": ["AppImage", "zip"],
+      "icon": "build/icon.png",
+      "category": "Office"
+    }
+  }
+}
